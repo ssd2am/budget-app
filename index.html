@@ -332,7 +332,7 @@ async function getSettings(){
 function init(){
   const today = new Date();
   cur = {y: today.getFullYear(), m: today.getMonth()+1};
-  loadMonth();
+  guard(loadMonth);
   loadVouchers().catch(function(){});
 }
 
@@ -420,59 +420,69 @@ function selectPay(id){ selectedVoucherId = id; renderPayMethods(); }
 function go(v){
   ['home','assets','plan'].forEach(function(x){ document.getElementById('v-'+x).style.display = (x===v?'block':'none'); });
   document.querySelectorAll('.tab').forEach(function(t){ t.classList.toggle('on', t.dataset.v===v); });
-  if(v==='assets') loadAssets();
-  if(v==='plan') loadPlan();
+  if(v==='assets') guard(loadAssets);
+  if(v==='plan') guard(loadPlan);
 }
 function openScreen(id){ document.getElementById(id).classList.add('on'); }
 function closeScreen(){ document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('on'); }); }
 
-/* ---------------- 지출 ---------------- */
+/* ---------------- 지출 ----------------
+   주의: loadMonth 등 "다시 불러오기" 함수들은 여기서 guard()로 감싸지 않는다.
+   저장/삭제 같은 동작이 이미 guard() 안에서 실행 중일 때 이 함수를 호출해서 화면을 새로고침하는데,
+   guard()가 중첩되면 이미 잠겨있어서(busy) 두 번째 guard가 조용히 아무 것도 안 하고 끝나버림 —
+   "저장은 됐는데 화면은 안 바뀌는" 버그의 원인이었음. 그래서 이 함수들은 스스로 잠그지 않고,
+   최상위 진입점(초기 로딩, 월 이동, 탭 전환)에서만 guard()로 감싸서 호출한다. */
 async function loadMonth(){
-  await guard(async function(){
-    const settings = await getSettings();
-    const mm = pad2(cur.m);
-    const totalDays = new Date(cur.y, cur.m, 0).getDate();
-    const start = cur.y+'-'+mm+'-01';
-    const end = cur.y+'-'+mm+'-'+pad2(totalDays);
+  const settings = await getSettings();
+  const mm = pad2(cur.m);
+  const totalDays = new Date(cur.y, cur.m, 0).getDate();
+  const start = cur.y+'-'+mm+'-01';
+  const end = cur.y+'-'+mm+'-'+pad2(totalDays);
 
-    /* 월예산은 그 달 계획(Spending estimate)이 우선, 없으면 설정의 기본값 — 과거 달에 소급 적용 안 되게 하기 위함 */
-    const ym = ymKey(cur.y, cur.m);
-    const { data: planSpending } = await sb.from('plan').select('estimate').eq('year_month', ym).eq('item','Spending').limit(1);
-    const monthlyBudget = (planSpending && planSpending.length && planSpending[0].estimate!=null)
-      ? Number(planSpending[0].estimate) : settings.monthlyBudget;
+  /* 월예산은 그 달 계획(Spending estimate)이 우선, 없으면 설정의 기본값 — 과거 달에 소급 적용 안 되게 하기 위함 */
+  const ym = ymKey(cur.y, cur.m);
+  const { data: planSpending } = await sb.from('plan').select('estimate').eq('year_month', ym).eq('item','Spending').limit(1);
+  const monthlyBudget = (planSpending && planSpending.length && planSpending[0].estimate!=null)
+    ? Number(planSpending[0].estimate) : settings.monthlyBudget;
 
-    const { data, error } = await sb.from('expense').select('*, voucher:voucher_id(name)').gte('date', start).lte('date', end).order('created_at');
-    if(error) throw error;
-    const byDate = {};
-    data.forEach(function(r){
-      const key = r.date;
-      if(!byDate[key]) byDate[key] = [];
-      byDate[key].push({ id: r.id, amount: Number(r.amount), memo: r.memo || '', voucherId: r.voucher_id, voucherName: r.voucher ? r.voucher.name : null });
-    });
-    /* 현금 지출만 예산/경과일 계산에 포함 — 상품권은 완전히 별도 추적 */
-    const cashDates = Object.keys(byDate).filter(function(d){ return byDate[d].some(function(e){ return !e.voucherId; }); });
-    const elapsed = cashDates.length;
-    let spent = 0;
-    cashDates.forEach(function(d){ byDate[d].forEach(function(e){ if(!e.voucherId) spent += e.amount; }); });
-    const dailyBudget = monthlyBudget / totalDays;
-    const avg = elapsed ? spent/elapsed : null;
-    const left = totalDays - elapsed;
-    const balance = monthlyBudget - spent;
-    const allowance = left>0 ? balance/left : null;
-    const bonus = avg!==null ? monthlyBudget - avg*totalDays : null;
-    monthCache = {
-      totalDays: totalDays, settings: settings, days: byDate,
-      metrics: { monthlyBudget: monthlyBudget, dailyBudget: dailyBudget, dailyAvg: avg, dailyAllowance: allowance, balance: balance, projectedBonus: bonus }
-    };
-    document.getElementById('monthTitle').textContent = cur.y+'년 '+cur.m+'월';
-    renderMetrics();
-    renderCalendar();
+  const { data, error } = await sb.from('expense').select('*, voucher:voucher_id(name)').gte('date', start).lte('date', end).order('created_at');
+  if(error) throw error;
+  const byDate = {};
+  data.forEach(function(r){
+    const key = r.date;
+    if(!byDate[key]) byDate[key] = [];
+    byDate[key].push({ id: r.id, amount: Number(r.amount), memo: r.memo || '', voucherId: r.voucher_id, voucherName: r.voucher ? r.voucher.name : null });
   });
+  /* 현금 지출만 예산/경과일 계산에 포함 — 상품권은 완전히 별도 추적 */
+  const cashDates = Object.keys(byDate).filter(function(d){ return byDate[d].some(function(e){ return !e.voucherId; }); });
+  const elapsed = cashDates.length;
+  let spent = 0;
+  cashDates.forEach(function(d){ byDate[d].forEach(function(e){ if(!e.voucherId) spent += e.amount; }); });
+  const dailyBudget = monthlyBudget / totalDays;
+  const avg = elapsed ? spent/elapsed : null;
+  const balance = monthlyBudget - spent;
+
+  /* 오늘 허용은 "기록 안 한 날"이 아니라 실제 오늘 날짜 기준 남은 일수로 계산.
+     지난달을 보고 있으면 이미 다 지난 달이라 0(표시 안 함), 미래 달이면 아직 하나도 안 지났으니 총일수. */
+  const today = new Date();
+  const isCurrentMonth = today.getFullYear()===cur.y && (today.getMonth()+1)===cur.m;
+  const isPastMonth = (cur.y < today.getFullYear()) || (cur.y===today.getFullYear() && cur.m < today.getMonth()+1);
+  const daysLeftReal = isCurrentMonth ? (totalDays - today.getDate() + 1) : (isPastMonth ? 0 : totalDays);
+  const allowance = daysLeftReal>0 ? balance/daysLeftReal : null;
+
+  const bonus = avg!==null ? monthlyBudget - avg*totalDays : null;
+  monthCache = {
+    totalDays: totalDays, settings: settings, days: byDate,
+    metrics: { monthlyBudget: monthlyBudget, dailyBudget: dailyBudget, dailyAvg: avg, dailyAllowance: allowance, balance: balance, projectedBonus: bonus }
+  };
+  document.getElementById('monthTitle').textContent = cur.y+'년 '+cur.m+'월';
+  renderMetrics();
+  renderCalendar();
 }
 function shiftMonth(n){
   const d = new Date(cur.y, cur.m-1+n, 1);
   cur = {y: d.getFullYear(), m: d.getMonth()+1};
-  loadMonth();
+  guard(loadMonth);
 }
 function renderMetrics(){
   const m = monthCache.metrics;
@@ -512,7 +522,11 @@ function renderCalendar(){
       else if(ratio<=yellowT) cls+=' ok';
       else if(ratio<=redT) cls+=' warn';
       else cls+=' over';
-      amt = s===0 ? '₩0' : (s<0 ? '+'+won(-s) : won(s));
+    }
+    if(es && es.length){
+      /* 셀에 보이는 숫자는 그날 전체(현금+상품권) 합계 — 색상만 현금(예산) 기준 */
+      let t=0; es.forEach(function(e){ t+=e.amount; });
+      amt = t===0 ? '₩0' : (t<0 ? '+'+won(-t) : won(t));
     }
     if(es && es.some(function(e){return e.memo;})) memo='<i class="memo"></i>';
     if(es && es.some(function(e){return e.voucherId;})) vdot='<i class="voucherdot"></i>';
@@ -629,30 +643,28 @@ function k(x){
 
 /* ---------------- 자산 ---------------- */
 async function loadAssets(){
-  await guard(async function(){
-    const settings = await getSettings();
-    const { data, error } = await sb.from('asset').select('*').order('sort_order');
-    if(error) throw error;
-    const groups = [];
-    const groupMap = {};
-    data.forEach(function(r){
-      if(!groupMap[r.group_name]){ groupMap[r.group_name] = {name:r.group_name, rows:[]}; groups.push(groupMap[r.group_name]); }
-      groupMap[r.group_name].rows.push(r);
-    });
-    const catOrder = ['현금','주식','적금','퇴직연금','주택청약'];
-    const catMap = {};
-    data.forEach(function(r){ catMap[r.category] = (catMap[r.category]||0) + Number(r.amount); });
-    const categories = catOrder.filter(function(c){return catMap[c]!=null;}).map(function(c){return {name:c, total:catMap[c]};});
-    const netTotal = data.reduce(function(s,r){return s+Number(r.amount);},0);
-    const left = settings.goal - netTotal;
-    const pct = settings.goal ? netTotal/settings.goal : 0;
-    const { data: snaps } = await sb.from('asset_snapshot').select('*').order('snap_date', {ascending:false}).limit(1);
-    const lastDate = (snaps && snaps[0]) ? snaps[0].snap_date : '';
-    assetCache = { groups: groups, categories: categories, netTotal: netTotal, goal: settings.goal, left: left, pct: pct, lastDate: lastDate, raw: data };
-    document.getElementById('assetDate').textContent = lastDate;
-    buildDonuts(assetCache);
-    buildAssetTable(assetCache);
+  const settings = await getSettings();
+  const { data, error } = await sb.from('asset').select('*').order('sort_order');
+  if(error) throw error;
+  const groups = [];
+  const groupMap = {};
+  data.forEach(function(r){
+    if(!groupMap[r.group_name]){ groupMap[r.group_name] = {name:r.group_name, rows:[]}; groups.push(groupMap[r.group_name]); }
+    groupMap[r.group_name].rows.push(r);
   });
+  const catOrder = ['현금','주식','적금','퇴직연금','주택청약'];
+  const catMap = {};
+  data.forEach(function(r){ catMap[r.category] = (catMap[r.category]||0) + Number(r.amount); });
+  const categories = catOrder.filter(function(c){return catMap[c]!=null;}).map(function(c){return {name:c, total:catMap[c]};});
+  const netTotal = data.reduce(function(s,r){return s+Number(r.amount);},0);
+  const left = settings.goal - netTotal;
+  const pct = settings.goal ? netTotal/settings.goal : 0;
+  const { data: snaps } = await sb.from('asset_snapshot').select('*').order('snap_date', {ascending:false}).limit(1);
+  const lastDate = (snaps && snaps[0]) ? snaps[0].snap_date : '';
+  assetCache = { groups: groups, categories: categories, netTotal: netTotal, goal: settings.goal, left: left, pct: pct, lastDate: lastDate, raw: data };
+  document.getElementById('assetDate').textContent = lastDate;
+  buildDonuts(assetCache);
+  buildAssetTable(assetCache);
 }
 function buildAssetTable(data){
   let h='';
@@ -772,36 +784,34 @@ function openSnapshots(){
 
 /* ---------------- 계획 ---------------- */
 async function loadPlan(){
-  await guard(async function(){
-    const ym = ymKey(cur.y, cur.m);
-    document.querySelector('#v-plan .ym').textContent = cur.y+'년 '+cur.m+'월';
-    let { data, error } = await sb.from('plan').select('*').eq('year_month', ym).order('sort_order');
-    if(error) throw error;
-    let isTemplate = false;
-    if(data.length === 0){
-      const { data: allRows } = await sb.from('plan').select('year_month').order('year_month');
-      const months = Array.from(new Set((allRows||[]).map(function(r){return r.year_month;})));
-      if(months.length){
-        const latestYm = months[months.length-1];
-        const { data: latestRows } = await sb.from('plan').select('*').eq('year_month', latestYm).order('sort_order');
-        data = (latestRows||[]).map(function(r){ return Object.assign({}, r, {id:null, actual:null}); });
-        isTemplate = true;
-      }
+  const ym = ymKey(cur.y, cur.m);
+  document.querySelector('#v-plan .ym').textContent = cur.y+'년 '+cur.m+'월';
+  let { data, error } = await sb.from('plan').select('*').eq('year_month', ym).order('sort_order');
+  if(error) throw error;
+  let isTemplate = false;
+  if(data.length === 0){
+    const { data: allRows } = await sb.from('plan').select('year_month').order('year_month');
+    const months = Array.from(new Set((allRows||[]).map(function(r){return r.year_month;})));
+    if(months.length){
+      const latestYm = months[months.length-1];
+      const { data: latestRows } = await sb.from('plan').select('*').eq('year_month', latestYm).order('sort_order');
+      data = (latestRows||[]).map(function(r){ return Object.assign({}, r, {id:null, actual:null}); });
+      isTemplate = true;
     }
-    const mm = pad2(cur.m);
-    const totalDays = new Date(cur.y, cur.m, 0).getDate();
-    const { data: expData } = await sb.from('expense').select('amount').is('voucher_id', null).gte('date', cur.y+'-'+mm+'-01').lte('date', cur.y+'-'+mm+'-'+pad2(totalDays));
-    const spentAuto = (expData||[]).reduce(function(s,r){return s+Number(r.amount);},0);
-    data.forEach(function(r){ if(r.item==='Spending') r.actual = spentAuto; });
+  }
+  const mm = pad2(cur.m);
+  const totalDays = new Date(cur.y, cur.m, 0).getDate();
+  const { data: expData } = await sb.from('expense').select('amount').is('voucher_id', null).gte('date', cur.y+'-'+mm+'-01').lte('date', cur.y+'-'+mm+'-'+pad2(totalDays));
+  const spentAuto = (expData||[]).reduce(function(s,r){return s+Number(r.amount);},0);
+  data.forEach(function(r){ if(r.item==='Spending') r.actual = spentAuto; });
 
-    const expensesEstimate = data.reduce(function(s,r){ return r.item==='Income' ? s : s + (Number(r.estimate)||0); },0);
-    const incomeRow = data.find(function(r){return r.item==='Income';});
-    const incomeEstimate = incomeRow ? (Number(incomeRow.estimate)||0) : 0;
-    const remainderEstimate = incomeEstimate - expensesEstimate;
+  const expensesEstimate = data.reduce(function(s,r){ return r.item==='Income' ? s : s + (Number(r.estimate)||0); },0);
+  const incomeRow = data.find(function(r){return r.item==='Income';});
+  const incomeEstimate = incomeRow ? (Number(incomeRow.estimate)||0) : 0;
+  const remainderEstimate = incomeEstimate - expensesEstimate;
 
-    planCache = { yearMonth: ym, isTemplate: isTemplate, rows: data, expensesEstimate: expensesEstimate, remainderEstimate: remainderEstimate };
-    renderPlan();
-  });
+  planCache = { yearMonth: ym, isTemplate: isTemplate, rows: data, expensesEstimate: expensesEstimate, remainderEstimate: remainderEstimate };
+  renderPlan();
 }
 function renderPlan(){
   const data = planCache;
@@ -865,7 +875,7 @@ function copyPlanTemplate(){
   guard(async function(){
     const ym = ymKey(cur.y, cur.m);
     const { data: existing } = await sb.from('plan').select('id').eq('year_month', ym).limit(1);
-    if(existing && existing.length){ await loadPlanInner(); return; }
+    if(existing && existing.length){ await loadPlan(); return; }
     const { data: allRows } = await sb.from('plan').select('year_month').order('year_month');
     const months = Array.from(new Set((allRows||[]).map(function(r){return r.year_month;})));
     if(!months.length) return;
@@ -876,23 +886,8 @@ function copyPlanTemplate(){
     });
     const { error } = await sb.from('plan').insert(toInsert);
     if(error) throw error;
-    await loadPlanInner();
+    await loadPlan();
   });
-}
-async function loadPlanInner(){
-  const ym = ymKey(cur.y, cur.m);
-  const { data, error } = await sb.from('plan').select('*').eq('year_month', ym).order('sort_order');
-  if(error) throw error;
-  const mm = pad2(cur.m);
-  const totalDays = new Date(cur.y, cur.m, 0).getDate();
-  const { data: expData } = await sb.from('expense').select('amount').is('voucher_id', null).gte('date', cur.y+'-'+mm+'-01').lte('date', cur.y+'-'+mm+'-'+pad2(totalDays));
-  const spentAuto = (expData||[]).reduce(function(s,r){return s+Number(r.amount);},0);
-  data.forEach(function(r){ if(r.item==='Spending') r.actual = spentAuto; });
-  const expensesEstimate = data.reduce(function(s,r){ return r.item==='Income' ? s : s + (Number(r.estimate)||0); },0);
-  const incomeRow = data.find(function(r){return r.item==='Income';});
-  const incomeEstimate = incomeRow ? (Number(incomeRow.estimate)||0) : 0;
-  planCache = { yearMonth: ym, isTemplate: false, rows: data, expensesEstimate: expensesEstimate, remainderEstimate: incomeEstimate - expensesEstimate };
-  renderPlan();
 }
 function addPlanRow(){
   const name = askRequired('항목 이름'); if(name==null) return;
