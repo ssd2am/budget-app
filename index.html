@@ -14,7 +14,6 @@
   <input id="loginEmail" type="email" placeholder="이메일" autocomplete="username">
   <input id="loginPw" type="password" placeholder="비밀번호" autocomplete="current-password">
   <button onclick="window.doLogin()">로그인</button>
-  <div class="err" id="loginError"></div>
 </div>
 
 <!-- ================= 앱 본체 ================= -->
@@ -95,6 +94,10 @@
     </div>
 
     <div class="sect">
+      <div class="row"><div class="main" onclick="window.openSettings()"><div class="t1">설정</div><div class="t2">월예산·목표·색상 기준</div></div><div class="arrow">›</div></div>
+    </div>
+
+    <div class="sect">
       <div class="sect-h">추후 구현</div>
       <div class="row"><div class="main" onclick="window.openScreen('s-ph')"><div class="t1">ETF 모으기</div></div><div class="arrow">›</div></div>
       <div class="row"><div class="main" onclick="window.openScreen('s-ph')"><div class="t1">상품권</div></div><div class="arrow">›</div></div>
@@ -135,6 +138,14 @@
   </div>
 </div>
 
+<!-- ================= 설정 서브화면 ================= -->
+<div id="s-settings" class="screen">
+  <div class="sub-h"><button class="back" onclick="window.closeScreen()">‹</button><div class="ttl">설정</div></div>
+  <div class="scroll" style="padding-bottom:20px">
+    <div id="settingsList"></div>
+  </div>
+</div>
+
 <div id="s-ph" class="screen">
   <div class="sub-h"><button class="back" onclick="window.closeScreen()">‹</button><div class="ttl">플레이스홀더</div></div>
   <div class="ph"><span class="phtag">v1 미구현</span><br>자리만 잡아둔 화면이야.<br>원본 시트의 블록 구조는 유지하고<br>내용은 나중에 채워.</div>
@@ -169,6 +180,8 @@
 </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
 <script type="module">
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -194,12 +207,68 @@ function pad2(n){ n=String(n); return n.length<2 ? '0'+n : n; }
 function ymKey(y,m){ return y+'-'+pad2(m); }
 function won(n){ n = Math.round(Number(n)); return (n<0?'-':'') + '₩' + Math.abs(n).toLocaleString('ko-KR'); }
 
+/* ---------------- 토스트 (저장 중 / 오류 표시) ---------------- */
+let toastTimer = null;
+function showToast(msg, type){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (type ? ' '+type : '');
+  clearTimeout(toastTimer);
+  if(type !== 'busy'){
+    toastTimer = setTimeout(function(){ t.classList.remove('show'); }, type==='err' ? 4000 : 1200);
+  }
+}
+function hideToast(){ document.getElementById('toast').classList.remove('show'); }
+
+/* 모든 서버 액션은 이걸 통해서만 실행 — 연타 방지 + "처리 중" 표시 + 에러 표시를 한 곳에서 보장 */
 async function guard(fn){
-  if(busy) return;
+  if(busy){ showToast('처리 중이에요, 잠시만요', 'busy'); return; }
   busy = true;
-  try { await fn(); }
-  catch(e){ alert('오류가 발생했습니다: ' + (e && e.message ? e.message : e)); }
-  finally { busy = false; }
+  showToast('처리 중…', 'busy');
+  try {
+    await fn();
+    hideToast();
+  } catch(e){
+    showToast('오류: ' + (e && e.message ? e.message : e), 'err');
+  } finally {
+    busy = false;
+  }
+}
+
+/* ---------------- 입력 검증 헬퍼 (prompt 취소=null, 잘못된 입력=undefined+토스트) ---------------- */
+function askRequired(label, def){
+  const v = prompt(label, def!=null?String(def):'');
+  if(v===null) return null;
+  const t = v.trim();
+  if(!t){ showToast(label+'은(는) 비워둘 수 없어요', 'err'); return undefined; }
+  return t;
+}
+function askOptional(label, def){
+  const v = prompt(label, def!=null?String(def):'');
+  if(v===null) return null;
+  return v.trim();
+}
+function askAmount(label, def){
+  const v = prompt(label, def!=null?String(def):'0');
+  if(v===null) return null;
+  const n = parseInt(String(v).replace(/[^0-9-]/g,''),10);
+  if(isNaN(n)){ showToast('숫자를 정확히 입력해주세요', 'err'); return undefined; }
+  return n;
+}
+function askDecimal(label, def){
+  const v = prompt(label, def!=null?String(def):'');
+  if(v===null) return null;
+  const n = parseFloat(String(v).replace(/[^0-9.-]/g,''));
+  if(isNaN(n)){ showToast('숫자를 정확히 입력해주세요', 'err'); return undefined; }
+  return n;
+}
+const ASSET_CATS = ['현금','주식','적금','퇴직연금','주택청약'];
+function askCategory(def){
+  const v = prompt('집계분류 ('+ASSET_CATS.join('/')+')', def!=null?String(def):'');
+  if(v===null) return null;
+  const t = v.trim();
+  if(!ASSET_CATS.includes(t)){ showToast('집계분류는 '+ASSET_CATS.join('/')+' 중 하나여야 해요', 'err'); return undefined; }
+  return t;
 }
 
 /* ---------------- 로그인 ---------------- */
@@ -216,13 +285,15 @@ function showApp(){
   document.getElementById('appRoot').style.display = 'flex';
   init();
 }
-async function doLogin(){
+function doLogin(){
   const email = document.getElementById('loginEmail').value;
   const pw = document.getElementById('loginPw').value;
-  document.getElementById('loginError').textContent = '';
-  const { error } = await sb.auth.signInWithPassword({ email, password: pw });
-  if(error){ document.getElementById('loginError').textContent = '로그인 실패: ' + error.message; return; }
-  showApp();
+  if(!email || !pw){ showToast('이메일과 비밀번호를 입력해주세요', 'err'); return; }
+  guard(async function(){
+    const { error } = await sb.auth.signInWithPassword({ email: email, password: pw });
+    if(error) throw new Error('로그인 실패: ' + error.message);
+    showApp();
+  });
 }
 async function doLogout(){
   await sb.auth.signOut();
@@ -360,6 +431,10 @@ function openSheet(key){
   document.getElementById('sheet').classList.add('on');
 }
 function closeSheet(){
+  if(buf){
+    if(!confirm('입력한 금액이 저장되지 않았어요. 닫을까요?')) return;
+  }
+  buf=''; negative=false; memoText='';
   document.getElementById('veil').classList.remove('on');
   document.getElementById('sheet').classList.remove('on');
 }
@@ -426,7 +501,7 @@ function k(x){
     return;
   }
   if(x==='ok'){
-    if(!buf) return;
+    if(!buf){ showToast('금액을 입력해주세요', 'err'); return; }
     const amt = parseInt(buf,10) * (negative?-1:1);
     const memo = memoText || null;
     guard(async function(){
@@ -474,8 +549,8 @@ function buildAssetTable(data){
     g.rows.forEach(function(r){
       const noteId = 'note'+r.id;
       h += '<div class="row">'+
-        '<div class="main" onclick="window.editAsset('+r.id+','+r.amount+')"><div class="t1">'+r.detail+'</div><div class="t2">'+(r.use_name||'')+'</div></div>'+
-        '<div class="v num" onclick="window.editAsset('+r.id+','+r.amount+')">'+won(r.amount)+'</div>'+
+        '<div class="main" onclick="window.editAsset('+r.id+')"><div class="t1">'+r.detail+'</div><div class="t2">'+(r.use_name||'')+'</div></div>'+
+        '<div class="v num" onclick="window.editAsset('+r.id+')">'+won(r.amount)+'</div>'+
         (r.note ? '<span class="dot" onclick="window.tm(\''+noteId+'\')"></span>' : '')+
         '<span class="del" onclick="window.deleteAsset('+r.id+')">×</span>'+
         '</div>'+
@@ -494,13 +569,21 @@ function buildAssetTable(data){
   document.getElementById('gPct').textContent = (data.pct*100).toFixed(2)+'%';
 }
 function tm(id){ const e=document.getElementById(id); e.style.display = e.style.display==='none' ? 'block' : 'none'; }
-function editAsset(id, current){
-  const v = prompt('새 금액 입력', current);
-  if(v==null) return;
-  const n = parseInt(String(v).replace(/[^0-9-]/g,''),10);
-  if(isNaN(n)) return;
+function editAsset(id){
+  const row = (assetCache.raw||[]).find(function(r){return r.id===id;});
+  if(!row) return;
+  const use = askOptional('용도', row.use_name);
+  if(use===null) return;
+  const detail = askRequired('계좌/상세', row.detail);
+  if(detail==null) return;
+  const amount = askAmount('금액', row.amount);
+  if(amount==null) return;
+  const note = askOptional('비고', row.note);
+  if(note===null) return;
+  const category = askCategory(row.category);
+  if(category==null) return;
   guard(async function(){
-    const { error } = await sb.from('asset').update({ amount: n }).eq('id', id);
+    const { error } = await sb.from('asset').update({ use_name: use, detail: detail, amount: amount, note: note||null, category: category }).eq('id', id);
     if(error) throw error;
     await appendSnapshot();
     await loadAssets();
@@ -516,12 +599,12 @@ function deleteAsset(id){
   });
 }
 function addAssetItem(){
-  const group = prompt('대분류 (예: 현금성 자산 / 투자 / 장기)'); if(!group) return;
-  const use = prompt('용도') || '';
-  const detail = prompt('계좌/상세'); if(!detail) return;
-  const amount = parseInt(String(prompt('금액','0')||'0').replace(/[^0-9-]/g,''),10)||0;
-  const note = prompt('비고') || null;
-  const category = prompt('집계분류 (현금/주식/적금/퇴직연금/주택청약)') || null;
+  const group = askRequired('대분류 (예: 현금성 자산 / 투자 / 장기)'); if(group==null) return;
+  const use = askOptional('용도'); if(use===null) return;
+  const detail = askRequired('계좌/상세'); if(detail==null) return;
+  const amount = askAmount('금액', 0); if(amount==null) return;
+  const note = askOptional('비고'); if(note===null) return;
+  const category = askCategory(); if(category==null) return;
   guard(async function(){
     const maxOrder = assetCache.raw.reduce(function(m,r){return Math.max(m, r.sort_order||0);},0);
     const { error } = await sb.from('asset').insert({ group_name: group, use_name: use, detail: detail, amount: amount, note: note, category: category, sort_order: maxOrder+1 });
@@ -611,8 +694,10 @@ async function loadPlan(){
 function renderPlan(){
   const data = planCache;
   document.getElementById('planTemplateNotice').style.display = data.isTemplate ? 'block' : 'none';
+  const LOCKED = (r)=> r.item==='Income' || r.item==='Spending';
   const rowsHtml = data.rows.map(function(r){
     const label = (r.item==='Income') ? 'Income →' : r.item;
+    const nameCell = (data.isTemplate || r.id==null || LOCKED(r)) ? label : '<span onclick="window.renamePlanItem('+r.id+',\''+r.item.replace(/'/g,"\\'")+'\')" style="cursor:pointer">'+label+'</span>';
     const estStr = r.estimate!=null ? won(r.estimate) : '—';
     const estCell = data.isTemplate ? '<td class="num empty">'+estStr+'</td>'
       : '<td class="num" onclick="window.editPlan('+r.id+",'estimate',"+(r.estimate||0)+')">'+estStr+'</td>';
@@ -624,8 +709,8 @@ function renderPlan(){
     } else {
       actCell = '<td class="num" onclick="window.editPlan('+r.id+",'actual',"+(r.actual||0)+')">'+(r.actual!=null?won(r.actual):'—')+'</td>';
     }
-    const delCell = (data.isTemplate || r.id==null) ? '<td></td>' : '<td class="delcol"><span class="del" onclick="window.deletePlanItem('+r.id+')">×</span></td>';
-    return '<tr><td>'+label+'</td>'+estCell+actCell+delCell+'</tr>';
+    const delCell = (data.isTemplate || r.id==null || LOCKED(r)) ? '<td></td>' : '<td class="delcol"><span class="del" onclick="window.deletePlanItem('+r.id+')">×</span></td>';
+    return '<tr><td>'+nameCell+'</td>'+estCell+actCell+delCell+'</tr>';
   }).join('');
   let sumActual=0, income=0;
   data.rows.forEach(function(r){
@@ -638,13 +723,20 @@ function renderPlan(){
     '<tr class="sum"><td>Remainder →</td><td class="num">'+won(data.remainderEstimate)+'</td><td class="num">'+won(remainderActual)+'</td><td></td></tr>';
 }
 function editPlan(id, field, current){
-  const v = prompt((field==='estimate'?'예상':'실제')+' 금액 입력', current||0);
-  if(v==null) return;
-  const n = parseInt(String(v).replace(/[^0-9-]/g,''),10);
-  if(isNaN(n)) return;
+  const n = askAmount((field==='estimate'?'예상':'실제')+' 금액 입력', current);
+  if(n==null) return;
   guard(async function(){
     const payload = {}; payload[field] = n;
     const { error } = await sb.from('plan').update(payload).eq('id', id);
+    if(error) throw error;
+    await loadPlan();
+  });
+}
+function renamePlanItem(id, current){
+  const name = askRequired('항목 이름', current);
+  if(name==null) return;
+  guard(async function(){
+    const { error } = await sb.from('plan').update({ item: name }).eq('id', id);
     if(error) throw error;
     await loadPlan();
   });
@@ -691,12 +783,11 @@ async function loadPlanInner(){
   renderPlan();
 }
 function addPlanRow(){
-  const name = prompt('항목 이름'); if(!name) return;
-  const est = prompt('예상 금액', '0'); if(est==null) return;
-  const n = parseInt(String(est).replace(/[^0-9-]/g,''),10)||0;
+  const name = askRequired('항목 이름'); if(name==null) return;
+  const est = askAmount('예상 금액', 0); if(est==null) return;
   guard(async function(){
     const maxOrder = planCache.rows.reduce(function(m,r){return Math.max(m, r.sort_order||0);},0);
-    const { error } = await sb.from('plan').insert({ year_month: ymKey(cur.y,cur.m), item: name, estimate: n, actual: null, sort_order: maxOrder+1 });
+    const { error } = await sb.from('plan').insert({ year_month: ymKey(cur.y,cur.m), item: name, estimate: est, actual: null, sort_order: maxOrder+1 });
     if(error) throw error;
     await loadPlan();
   });
@@ -719,7 +810,7 @@ function renderFixed(){
     const meta = [r.category, r.pay_day?r.pay_day+'일':'', (r.source||'') + (r.cancel_date?'('+r.cancel_date+')':'')].filter(Boolean).join(' · ');
     return '<div class="fx '+(r.active?'':'off')+'">'+
       '<div class="tg" onclick="window.toggleFx('+r.id+','+(!r.active)+')"></div>'+
-      '<div class="main" onclick="window.editFxAmount('+r.id+','+(r.amount||0)+')"><div class="t1">'+r.name+'</div><div class="t2">'+(meta||'—')+'</div></div>'+
+      '<div class="main" onclick="window.editFx('+r.id+')"><div class="t1">'+r.name+'</div><div class="t2">'+(meta||'—')+'</div></div>'+
       '<div class="v num">'+(r.amount!=null?won(r.amount):'—')+'</div>'+
       '<span class="del" onclick="window.deleteFx('+r.id+')">×</span></div>';
   }).join('');
@@ -746,13 +837,26 @@ function toggleFx(id, val){
     await refreshFixed();
   });
 }
-function editFxAmount(id, current){
-  const v = prompt('금액 수정', current);
-  if(v==null) return;
-  const n = parseInt(String(v).replace(/[^0-9-]/g,''),10);
-  if(isNaN(n)) return;
+function editFx(id){
+  const row = (fixedCache||[]).find(function(r){return r.id===id;});
+  if(!row) return;
+  const name = askRequired('항목 이름', row.name);
+  if(name==null) return;
+  const category = askOptional('분류', row.category);
+  if(category===null) return;
+  const payDay = askOptional('결제일 (예: 15, 상시)', row.pay_day);
+  if(payDay===null) return;
+  const amount = askAmount('금액', row.amount||0);
+  if(amount==null) return;
+  const source = askOptional('자금출처', row.source);
+  if(source===null) return;
+  const cancelDate = askOptional('해지일 (YYYY-MM-DD, 없으면 비워두기)', row.cancel_date);
+  if(cancelDate===null) return;
   guard(async function(){
-    const { error } = await sb.from('fixed_cost').update({ amount: n }).eq('id', id);
+    const { error } = await sb.from('fixed_cost').update({
+      name: name, category: category||null, pay_day: payDay||null,
+      amount: amount, source: source||null, cancel_date: cancelDate||null
+    }).eq('id', id);
     if(error) throw error;
     await refreshFixed();
   });
@@ -766,12 +870,13 @@ function deleteFx(id){
   });
 }
 function addFxItem(){
-  const name = prompt('항목 이름'); if(!name) return;
-  const category = prompt('분류','구독') || '';
-  const amount = parseInt(String(prompt('금액','0')||'0').replace(/[^0-9-]/g,''),10)||0;
-  const source = prompt('자금출처','') || null;
+  const name = askRequired('항목 이름'); if(name==null) return;
+  const category = askOptional('분류', '구독'); if(category===null) return;
+  const payDay = askOptional('결제일 (예: 15, 상시)'); if(payDay===null) return;
+  const amount = askAmount('금액', 0); if(amount==null) return;
+  const source = askOptional('자금출처'); if(source===null) return;
   guard(async function(){
-    const { error } = await sb.from('fixed_cost').insert({ name: name, category: category, pay_day: null, active: true, amount: amount, source: source, cancel_date: null });
+    const { error } = await sb.from('fixed_cost').insert({ name: name, category: category||null, pay_day: payDay||null, active: true, amount: amount, source: source||null, cancel_date: null });
     if(error) throw error;
     await refreshFixed();
   });
@@ -787,11 +892,28 @@ function openAnnual(){
     renderAnnual(data);
   });
 }
+let annualCache = [];
 function renderAnnual(rows){
+  annualCache = rows;
   document.getElementById('annualList').innerHTML = rows.map(function(r){
-    return '<div class="fx"><div class="main"><div class="t1">'+r.name+'</div><div class="t2">'+r.category+' · '+r.pay_date+' · '+r.source+'</div></div>'+
+    return '<div class="fx"><div class="main" onclick="window.editAnnual('+r.id+')"><div class="t1">'+r.name+'</div><div class="t2">'+r.category+' · '+r.pay_date+' · '+r.source+'</div></div>'+
       '<div class="v num">'+won(r.amount)+'</div><span class="del" onclick="window.deleteAnnual('+r.id+')">×</span></div>';
   }).join('');
+}
+function editAnnual(id){
+  const row = annualCache.find(function(r){return r.id===id;});
+  if(!row) return;
+  const name = askRequired('항목 이름', row.name); if(name==null) return;
+  const category = askOptional('분류', row.category); if(category===null) return;
+  const payDate = askOptional('결제일 (YYYY-MM-DD)', row.pay_date); if(payDate===null) return;
+  const amount = askAmount('금액', row.amount); if(amount==null) return;
+  const source = askOptional('자금출처', row.source); if(source===null) return;
+  guard(async function(){
+    const { error } = await sb.from('annual_fixed_cost').update({ name: name, category: category||null, pay_date: payDate||null, amount: amount, source: source||null }).eq('id', id);
+    if(error) throw error;
+    const { data } = await sb.from('annual_fixed_cost').select('*').order('id');
+    renderAnnual(data||[]);
+  });
 }
 function deleteAnnual(id){
   if(!confirm('삭제할까요?')) return;
@@ -803,16 +925,46 @@ function deleteAnnual(id){
   });
 }
 function addAnnualItem(){
-  const name = prompt('항목 이름'); if(!name) return;
-  const category = prompt('분류','구독') || '';
-  const payDate = prompt('결제일 (YYYY-MM-DD)','') || null;
-  const amount = parseInt(String(prompt('금액','0')||'0').replace(/[^0-9-]/g,''),10)||0;
-  const source = prompt('자금출처','') || null;
+  const name = askRequired('항목 이름'); if(name==null) return;
+  const category = askOptional('분류', '구독'); if(category===null) return;
+  const payDate = askOptional('결제일 (YYYY-MM-DD)'); if(payDate===null) return;
+  const amount = askAmount('금액', 0); if(amount==null) return;
+  const source = askOptional('자금출처'); if(source===null) return;
   guard(async function(){
-    const { error } = await sb.from('annual_fixed_cost').insert({ name: name, category: category, pay_date: payDate, amount: amount, source: source });
+    const { error } = await sb.from('annual_fixed_cost').insert({ name: name, category: category||null, pay_date: payDate||null, amount: amount, source: source||null });
     if(error) throw error;
     const { data } = await sb.from('annual_fixed_cost').select('*').order('id');
     renderAnnual(data||[]);
+  });
+}
+
+/* ---------------- 설정 ---------------- */
+const SETTINGS_LABELS = { '월예산':'월예산', '목표':'목표', '노랑경계':'노랑 경계 (배수)', '빨강경계':'빨강 경계 (배수)' };
+function openSettings(){
+  openScreen('s-settings');
+  document.getElementById('settingsList').innerHTML = '<div class="loading">불러오는 중</div>';
+  guard(async function(){
+    const { data, error } = await sb.from('settings').select('*');
+    if(error) throw error;
+    renderSettingsList(data);
+  });
+}
+function renderSettingsList(rows){
+  document.getElementById('settingsList').innerHTML = rows.map(function(r){
+    const isDecimal = (r.key==='노랑경계' || r.key==='빨강경계');
+    const display = isDecimal ? Number(r.value) : won(r.value);
+    return '<div class="row"><div class="main" onclick="window.editSetting(\''+r.key+'\','+r.value+','+isDecimal+')"><div class="t1">'+(SETTINGS_LABELS[r.key]||r.key)+'</div></div><div class="v num">'+display+'</div></div>';
+  }).join('');
+}
+function editSetting(key, current, isDecimal){
+  const val = isDecimal ? askDecimal((SETTINGS_LABELS[key]||key)+' 값', current) : askAmount((SETTINGS_LABELS[key]||key)+' 값', current);
+  if(val==null) return;
+  guard(async function(){
+    const { error } = await sb.from('settings').update({ value: val }).eq('key', key);
+    if(error) throw error;
+    settingsCache = null;
+    const { data } = await sb.from('settings').select('*');
+    renderSettingsList(data);
   });
 }
 
@@ -820,9 +972,10 @@ function addAnnualItem(){
 Object.assign(window, {
   doLogin, doLogout, shiftMonth, openSheet, closeSheet, k, toggleMemo, removeEntry,
   go, openScreen, closeScreen, editAsset, deleteAsset, addAssetItem, tm, openSnapshots,
-  editPlan, deletePlanItem, copyPlanTemplate, addPlanRow,
-  openFixed, toggleFx, editFxAmount, deleteFx, addFxItem,
-  openAnnual, deleteAnnual, addAnnualItem
+  editPlan, renamePlanItem, deletePlanItem, copyPlanTemplate, addPlanRow,
+  openFixed, toggleFx, editFx, deleteFx, addFxItem,
+  openAnnual, editAnnual, deleteAnnual, addAnnualItem,
+  openSettings, editSetting
 });
 
 checkSession();
