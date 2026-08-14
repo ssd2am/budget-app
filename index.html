@@ -339,6 +339,13 @@ async function loadMonth(){
     const totalDays = new Date(cur.y, cur.m, 0).getDate();
     const start = cur.y+'-'+mm+'-01';
     const end = cur.y+'-'+mm+'-'+pad2(totalDays);
+
+    /* 월예산은 그 달 계획(Spending estimate)이 우선, 없으면 설정의 기본값 — 과거 달에 소급 적용 안 되게 하기 위함 */
+    const ym = ymKey(cur.y, cur.m);
+    const { data: planSpending } = await sb.from('plan').select('estimate').eq('year_month', ym).eq('item','Spending').limit(1);
+    const monthlyBudget = (planSpending && planSpending.length && planSpending[0].estimate!=null)
+      ? Number(planSpending[0].estimate) : settings.monthlyBudget;
+
     const { data, error } = await sb.from('expense').select('*').gte('date', start).lte('date', end).order('created_at');
     if(error) throw error;
     const byDate = {};
@@ -351,15 +358,15 @@ async function loadMonth(){
     const elapsed = recordedDates.length;
     let spent = 0;
     recordedDates.forEach(function(d){ byDate[d].forEach(function(e){ spent += e.amount; }); });
-    const dailyBudget = settings.monthlyBudget / totalDays;
+    const dailyBudget = monthlyBudget / totalDays;
     const avg = elapsed ? spent/elapsed : null;
     const left = totalDays - elapsed;
-    const balance = settings.monthlyBudget - spent;
+    const balance = monthlyBudget - spent;
     const allowance = left>0 ? balance/left : null;
-    const bonus = avg!==null ? settings.monthlyBudget - avg*totalDays : null;
+    const bonus = avg!==null ? monthlyBudget - avg*totalDays : null;
     monthCache = {
       totalDays: totalDays, settings: settings, days: byDate,
-      metrics: { monthlyBudget: settings.monthlyBudget, dailyBudget: dailyBudget, dailyAvg: avg, dailyAllowance: allowance, balance: balance, projectedBonus: bonus }
+      metrics: { monthlyBudget: monthlyBudget, dailyBudget: dailyBudget, dailyAvg: avg, dailyAllowance: allowance, balance: balance, projectedBonus: bonus }
     };
     document.getElementById('monthTitle').textContent = cur.y+'년 '+cur.m+'월';
     renderMetrics();
@@ -939,7 +946,8 @@ function addAnnualItem(){
 }
 
 /* ---------------- 설정 ---------------- */
-const SETTINGS_LABELS = { '월예산':'월예산', '목표':'목표', '노랑경계':'노랑 경계 (배수)', '빨강경계':'빨강 경계 (배수)' };
+const SETTINGS_LABELS = { '월예산':'월예산 (기본값)', '목표':'목표', '노랑경계':'노랑 경계 (배수)', '빨강경계':'빨강 경계 (배수)' };
+const SETTINGS_HINTS = { '월예산':'계획 탭에 그 달 예산(Spending)이 없을 때만 쓰임. 각 달 예산은 계획 탭에서 따로 잡으세요.' };
 function openSettings(){
   openScreen('s-settings');
   document.getElementById('settingsList').innerHTML = '<div class="loading">불러오는 중</div>';
@@ -953,7 +961,8 @@ function renderSettingsList(rows){
   document.getElementById('settingsList').innerHTML = rows.map(function(r){
     const isDecimal = (r.key==='노랑경계' || r.key==='빨강경계');
     const display = isDecimal ? Number(r.value) : won(r.value);
-    return '<div class="row"><div class="main" onclick="window.editSetting(\''+r.key+'\','+r.value+','+isDecimal+')"><div class="t1">'+(SETTINGS_LABELS[r.key]||r.key)+'</div></div><div class="v num">'+display+'</div></div>';
+    const hint = SETTINGS_HINTS[r.key] ? '<div class="t2">'+SETTINGS_HINTS[r.key]+'</div>' : '';
+    return '<div class="row"><div class="main" onclick="window.editSetting(\''+r.key+'\','+r.value+','+isDecimal+')"><div class="t1">'+(SETTINGS_LABELS[r.key]||r.key)+'</div>'+hint+'</div><div class="v num">'+display+'</div></div>';
   }).join('');
 }
 function editSetting(key, current, isDecimal){
