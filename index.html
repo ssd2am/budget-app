@@ -33,6 +33,7 @@
         <div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div class="we">토</div><div class="we">일</div>
       </div>
       <div class="cal" id="cal"></div>
+      <div id="calToggle"></div>
       <div class="legend">
         <span><i class="chip" style="background:var(--ok)"></i>예산 이내 · 무지출</span>
         <span><i class="chip" style="background:var(--warn)"></i>경미 초과</span>
@@ -94,7 +95,7 @@
     </div>
 
     <div class="sect">
-      <div class="row"><div class="main" onclick="window.openVoucher()"><div class="t1">상품권</div><div class="t2">잔액·등록 관리</div></div><div class="arrow">›</div></div>
+      <div class="row"><div class="main" onclick="window.openVoucher()"><div class="t1">머니</div><div class="t2">카카오머니·쿠팡캐시 등 잔액·등록 관리</div></div><div class="arrow">›</div></div>
       <div class="row"><div class="main" onclick="window.openSettings()"><div class="t1">설정</div><div class="t2">월예산·목표·색상 기준</div></div><div class="arrow">›</div></div>
     </div>
 
@@ -138,12 +139,12 @@
   </div>
 </div>
 
-<!-- ================= 상품권 서브화면 ================= -->
+<!-- ================= 머니(상품권/포인트 등) 서브화면 ================= -->
 <div id="s-voucher" class="screen">
-  <div class="sub-h"><button class="back" onclick="window.closeScreen()">‹</button><div class="ttl">상품권</div></div>
+  <div class="sub-h"><button class="back" onclick="window.closeScreen()">‹</button><div class="ttl">머니</div></div>
   <div class="scroll" style="padding-bottom:20px">
     <div id="voucherList"></div>
-    <button class="addrow" style="margin:12px 16px;width:calc(100% - 32px)" onclick="window.addVoucherItem()">+ 상품권 등록</button>
+    <button class="addrow" style="margin:12px 16px;width:calc(100% - 32px)" onclick="window.addVoucherItem()">+ 머니 등록</button>
   </div>
 </div>
 
@@ -214,6 +215,7 @@ let sheetDate = null, buf='', negative=false, memoText='';
 let busy = false;
 let voucherCache = [];
 let selectedVoucherId = null;
+let calIncludeVoucher = false;
 
 function pad2(n){ n=String(n); return n.length<2 ? '0'+n : n; }
 function ymKey(y,m){ return y+'-'+pad2(m); }
@@ -336,7 +338,7 @@ function init(){
   loadVouchers().catch(function(){});
 }
 
-/* ---------------- 상품권 ---------------- */
+/* ---------------- 머니 (상품권/포인트 등) ---------------- */
 async function loadVouchers(){
   const { data, error } = await sb.from('voucher').select('*').order('sort_order');
   if(error) throw error;
@@ -375,7 +377,7 @@ function toggleVoucher(id, val){
 function editVoucher(id){
   const row = voucherCache.find(function(v){return v.id===id;});
   if(!row) return;
-  const name = askRequired('상품권 이름', row.name); if(name==null) return;
+  const name = askRequired('머니 이름', row.name); if(name==null) return;
   const initial = askAmount('초기 금액', row.initial_amount); if(initial==null) return;
   guard(async function(){
     const { error } = await sb.from('voucher').update({ name: name, initial_amount: initial }).eq('id', id);
@@ -385,7 +387,7 @@ function editVoucher(id){
   });
 }
 function addVoucherItem(){
-  const name = askRequired('상품권 이름'); if(name==null) return;
+  const name = askRequired('머니 이름'); if(name==null) return;
   const initial = askAmount('초기 금액', 0); if(initial==null) return;
   guard(async function(){
     const maxOrder = voucherCache.reduce(function(m,v){return Math.max(m, v.sort_order||0);},0);
@@ -396,7 +398,7 @@ function addVoucherItem(){
   });
 }
 function quickAddVoucher(){
-  const name = askRequired('상품권 이름'); if(name==null) return;
+  const name = askRequired('머니 이름'); if(name==null) return;
   const initial = askAmount('초기 금액', 0); if(initial==null) return;
   guard(async function(){
     const maxOrder = voucherCache.reduce(function(m,v){return Math.max(m, v.sort_order||0);},0);
@@ -409,11 +411,11 @@ function quickAddVoucher(){
 }
 function renderPayMethods(){
   const active = voucherCache.filter(function(v){return v.active;});
-  let h = '<button class="paychip'+(selectedVoucherId===null?' on':'')+'" onclick="window.selectPay(null)">현금</button>';
+  let h = '<button class="paychip'+(selectedVoucherId===null?' on':'')+'" onclick="window.selectPay(null)">달달</button>';
   active.forEach(function(v){
     h += '<button class="paychip'+(selectedVoucherId===v.id?' on':'')+'" onclick="window.selectPay('+v.id+')">'+v.name+'</button>';
   });
-  h += '<button class="paychip" onclick="window.quickAddVoucher()">+ 새 상품권</button>';
+  h += '<button class="paychip" onclick="window.quickAddVoucher()">+ 새 머니</button>';
   document.getElementById('paymethods').innerHTML = h;
 }
 function selectPay(id){ selectedVoucherId = id; renderPayMethods(); }
@@ -453,7 +455,7 @@ async function loadMonth(){
     if(!byDate[key]) byDate[key] = [];
     byDate[key].push({ id: r.id, amount: Number(r.amount), memo: r.memo || '', voucherId: r.voucher_id, voucherName: r.voucher ? r.voucher.name : null });
   });
-  /* 현금 지출만 예산/경과일 계산에 포함 — 상품권은 완전히 별도 추적 */
+  /* 달달 지출만 예산/경과일 계산에 포함 — 머니는 완전히 별도 추적 */
   const cashDates = Object.keys(byDate).filter(function(d){ return byDate[d].some(function(e){ return !e.voucherId; }); });
   const elapsed = cashDates.length;
   let spent = 0;
@@ -499,7 +501,17 @@ function renderMetrics(){
     return '<div class="metric"><div class="lbl">'+p[0]+'</div><div class="val num '+(v.charAt(0)==='-'?'neg':'')+'">'+v+'</div></div>';
   }).join('');
 }
+function renderCalToggle(){
+  document.getElementById('calToggle').innerHTML =
+    '<div class="fx'+(calIncludeVoucher?'':' off')+'" onclick="window.toggleCalMode()" style="cursor:pointer">'+
+    '<div class="tg"></div><div class="main"><div class="t1">머니 포함해서 보기</div><div class="t2">기본은 달달(생활비) 지출만 표시</div></div></div>';
+}
+function toggleCalMode(){
+  calIncludeVoucher = !calIncludeVoucher;
+  renderCalendar();
+}
 function renderCalendar(){
+  renderCalToggle();
   const total = monthCache.totalDays;
   const dailyBudget = monthCache.metrics.dailyBudget;
   const yellowT = monthCache.settings.yellowThreshold;
@@ -515,6 +527,7 @@ function renderCalendar(){
     const cashEs = es ? es.filter(function(e){return !e.voucherId;}) : [];
     const isToday = today.getFullYear()===cur.y && (today.getMonth()+1)===cur.m && today.getDate()===d;
     let cls='cell', amt='', memo='', vdot='';
+    /* 색상은 항상 달달(예산) 기준으로 고정 — 머니 지출은 예산 판정에 안 섞임 */
     if(cashEs.length){
       let s=0; cashEs.forEach(function(e){ s+=e.amount; });
       const ratio = s/dailyBudget;
@@ -523,9 +536,10 @@ function renderCalendar(){
       else if(ratio<=redT) cls+=' warn';
       else cls+=' over';
     }
-    if(es && es.length){
-      /* 셀에 보이는 숫자는 그날 전체(현금+상품권) 합계 — 색상만 현금(예산) 기준 */
-      let t=0; es.forEach(function(e){ t+=e.amount; });
+    /* 숫자는 토글에 따라: 기본은 달달만, 켜면 달달+머니 전체 */
+    const displaySet = calIncludeVoucher ? es : cashEs;
+    if(displaySet && displaySet.length){
+      let t=0; displaySet.forEach(function(e){ t+=e.amount; });
       amt = t===0 ? '₩0' : (t<0 ? '+'+won(-t) : won(t));
     }
     if(es && es.some(function(e){return e.memo;})) memo='<i class="memo"></i>';
@@ -568,7 +582,10 @@ function drawSheetBody(){
   }
   let cashSum=0, voucherSum=0;
   es.forEach(function(e){ if(e.voucherId) voucherSum+=e.amount; else cashSum+=e.amount; });
-  document.getElementById('sheetSum').textContent = won(cashSum) + (voucherSum ? ' · 상품권 '+won(voucherSum) : '');
+  const total = cashSum + voucherSum;
+  let sumHtml = won(total);
+  if(voucherSum !== 0){ sumHtml += ' <span class="sumsplit">달달 '+won(cashSum)+' · 머니 '+won(voucherSum)+'</span>'; }
+  document.getElementById('sheetSum').innerHTML = sumHtml;
   const cashOnly = es.filter(function(e){return !e.voucherId;});
   if(cashOnly.length===0 && voucherSum===0){ body.innerHTML = '<div class="empty-note">무지출로 기록된 날</div>'; return; }
   body.innerHTML = es.map(function(e,i){
@@ -608,7 +625,7 @@ function k(x){
   if(x==='-'){ negative = !negative; padDraw(); return; }
   if(x==='zero'){
     guard(async function(){
-      /* 무지출은 현금 지출 개념 — 상품권 기록은 건드리지 않고 현금 기록만 0으로 정리 */
+      /* 무지출은 달달 지출 개념 — 머니 기록은 건드리지 않고 달달 기록만 0으로 정리 */
       const ids = (monthCache.days[sheetDate]||[]).filter(function(e){return !e.voucherId;}).map(function(e){return e.id;});
       if(ids.length){ const { error } = await sb.from('expense').delete().in('id', ids); if(error) throw error; }
       const { error: e2 } = await sb.from('expense').insert({ date: sheetDate, amount: 0, memo: null, voucher_id: null });
@@ -1085,7 +1102,8 @@ Object.assign(window, {
   openFixed, toggleFx, editFx, deleteFx, addFxItem,
   openAnnual, editAnnual, deleteAnnual, addAnnualItem,
   openSettings, editSetting,
-  openVoucher, toggleVoucher, editVoucher, addVoucherItem, quickAddVoucher, selectPay
+  openVoucher, toggleVoucher, editVoucher, addVoucherItem, quickAddVoucher, selectPay,
+  toggleCalMode
 });
 
 checkSession();
