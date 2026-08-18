@@ -17,7 +17,16 @@
 </div>
 
 <!-- ================= 앱 본체 ================= -->
-<div class="phone" id="appRoot" style="display:none">
+<div class="appshell" id="appRoot" style="display:none">
+<nav class="sidenav">
+  <div class="brand">가계부</div>
+  <div class="navitem on" data-v="home" onclick="window.go('home')">지출</div>
+  <div class="navitem" data-v="assets" onclick="window.go('assets')">자산</div>
+  <div class="navitem" data-v="plan" onclick="window.go('plan')">계획</div>
+  <div class="logoutlink"><a href="#" onclick="window.doLogout();return false;">로그아웃</a></div>
+</nav>
+<div class="mainwrap">
+<div class="phone">
 
 <!-- ================= HOME (지출) ================= -->
 <div id="v-home" class="view">
@@ -183,13 +192,15 @@
   </div>
 </div>
 
-<!-- ================= 탭바 ================= -->
+<!-- ================= 탭바 (모바일 전용) ================= -->
 <div class="tabs">
   <button class="tab on" data-v="home" onclick="window.go('home')">지출</button>
   <button class="tab" data-v="assets" onclick="window.go('assets')">자산</button>
   <button class="tab" data-v="plan" onclick="window.go('plan')">계획</button>
 </div>
-</div>
+</div><!-- /.phone -->
+</div><!-- /.mainwrap -->
+</div><!-- /.appshell -->
 
 <div class="toast" id="toast"></div>
 
@@ -421,7 +432,7 @@ function renderPayMethods(){
 function selectPay(id){ selectedVoucherId = id; renderPayMethods(); }
 function go(v){
   ['home','assets','plan'].forEach(function(x){ document.getElementById('v-'+x).style.display = (x===v?'block':'none'); });
-  document.querySelectorAll('.tab').forEach(function(t){ t.classList.toggle('on', t.dataset.v===v); });
+  document.querySelectorAll('.tab, .navitem').forEach(function(t){ t.classList.toggle('on', t.dataset.v===v); });
   if(v==='assets') guard(loadAssets);
   if(v==='plan') guard(loadPlan);
 }

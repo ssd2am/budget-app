@@ -22,6 +22,8 @@ body{
   display:flex;justify-content:center;
   padding:0;
 }
+.appshell{display:flex;min-height:100vh;justify-content:center;width:100%}
+.sidenav{display:none}
 .num{font-family:'IBM Plex Mono','SFMono-Regular',Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 
 #loginScreen{display:flex;flex-direction:column;justify-content:center;min-height:100vh;padding:24px;max-width:420px;margin:0 auto;background:var(--bg);width:100%}
@@ -151,10 +153,10 @@ body{
 .tab{flex:1;padding:12px 0 16px;text-align:center;font-size:12px;color:var(--dim);cursor:pointer;background:none;border:none}
 .tab.on{color:var(--ink);font-weight:700;box-shadow:inset 0 2px 0 var(--ink)}
 
-.veil{position:absolute;inset:0;background:rgba(0,0,0,.32);opacity:0;pointer-events:none;transition:opacity .18s;z-index:20}
+.veil{position:fixed;inset:0;background:rgba(0,0,0,.32);opacity:0;pointer-events:none;transition:opacity .18s;z-index:20}
 .veil.on{opacity:1;pointer-events:auto}
 .sheet{
-  position:absolute;left:0;right:0;bottom:0;background:var(--bg);z-index:21;
+  position:fixed;left:0;right:0;bottom:0;background:var(--bg);z-index:21;
   transform:translateY(100%);transition:transform .22s ease;
   border-top:1px solid var(--line);max-height:92%;display:flex;flex-direction:column;
 }
@@ -225,3 +227,67 @@ body{
 .paychip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
 .paytag{font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:10px;padding:2px 7px;margin-right:6px;white-space:nowrap}
 .cell .voucherdot{position:absolute;bottom:5px;left:3px;width:4px;height:4px;border-radius:50%;background:var(--warnInk);opacity:.8}
+
+/* ==================== 반응형: 태블릿/PC (≥768px) ====================
+   모바일: 지금 그대로 (폰 카드 + 하단 탭바 + 바텀시트)
+   태블릿/PC: 좌측 사이드바 + 넓은 콘텐츠 + 우측 슬라이드 패널
+*/
+@media (min-width:768px){
+  body{justify-content:flex-start}
+  .appshell{justify-content:flex-start}
+
+  .sidenav{
+    display:flex;flex-direction:column;width:200px;flex:none;
+    background:var(--bg);border-right:1px solid var(--line);
+    min-height:100vh;padding:20px 0;position:sticky;top:0;align-self:flex-start;
+  }
+  .sidenav .brand{font-size:15px;font-weight:700;padding:0 20px 20px}
+  .sidenav .navitem{
+    display:flex;align-items:center;gap:10px;padding:12px 20px;
+    font-size:14px;color:var(--dim);cursor:pointer;border-left:3px solid transparent;
+  }
+  .sidenav .navitem.on{color:var(--ink);font-weight:700;background:var(--panel);border-left-color:var(--ink)}
+  .sidenav .logoutlink{margin-top:auto;padding:12px 20px;font-size:11px}
+  .sidenav .logoutlink a{color:var(--faint)}
+  .scroll .logoutlink{display:none}
+
+  .tabs{display:none}
+
+  .phone{max-width:none;width:100%;min-height:100vh;box-shadow:none}
+  .mainwrap{flex:1;display:flex;justify-content:center;background:var(--bg);min-height:100vh}
+  .mainwrap .phone{max-width:720px}
+
+  .scroll{padding-bottom:40px}
+
+  .metrics{grid-template-columns:repeat(6,1fr)}
+  .metric:nth-child(3n){border-right:1px solid var(--line2)}
+  .metric:nth-child(6n){border-right:none}
+  .metric:nth-child(n+4){border-bottom:none}
+  .metric{padding:16px 12px}
+  .metric .lbl{font-size:11.5px}
+  .metric .val{font-size:17px}
+
+  .cell{height:74px}
+
+  .donuts{max-width:480px;margin:0 auto}
+
+  /* 바텀시트 → 우측 슬라이드 패널 */
+  .sheet{
+    left:auto;right:0;top:0;bottom:0;
+    width:400px;max-width:92vw;max-height:none;
+    transform:translateX(100%);
+    border-top:none;border-left:1px solid var(--line);
+  }
+  .sheet.on{transform:translateX(0)}
+}
+
+@media (min-width:1200px){
+  .sidenav{width:220px}
+  .mainwrap .phone{max-width:900px}
+  .metric{padding:20px 14px}
+  .metric .lbl{font-size:12px}
+  .metric .val{font-size:19px}
+  .cell{height:88px}
+  .cell .amt{font-size:12.5px}
+  .donuts{max-width:560px}
+}
