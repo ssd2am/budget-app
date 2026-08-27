@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>가계부</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Space+Mono:wght@400;700&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -30,13 +32,19 @@
 
 <!-- ================= HOME (지출) ================= -->
 <div id="v-home" class="view">
-  <div class="topbar">
-    <button class="navbtn" onclick="shiftMonth(-1)">‹</button>
-    <h1 id="monthTitle">불러오는 중</h1>
-    <button class="navbtn" onclick="shiftMonth(1)">›</button>
+  <div class="hero">
+    <div class="hero-deco" id="heroDeco"></div>
+    <div class="hero-nav">
+      <button class="navbtn" onclick="shiftMonth(-1)">‹</button>
+      <h1 id="monthTitle">불러오는 중</h1>
+      <button class="navbtn" onclick="shiftMonth(1)">›</button>
+    </div>
+    <div class="hero-lbl">오늘 허용</div>
+    <div class="hero-val num" id="heroVal">—</div>
+    <div class="hero-sub" id="heroSub">—</div>
   </div>
+  <div class="metrics" id="metrics"></div>
   <div class="scroll">
-    <div class="metrics" id="metrics"></div>
     <div class="calwrap">
       <div class="dow">
         <div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div class="we">토</div><div class="we">일</div>
@@ -44,10 +52,10 @@
       <div class="cal" id="cal"></div>
       <div id="calToggle"></div>
       <div class="legend">
-        <span><i class="chip" style="background:var(--ok)"></i>예산 이내 · 무지출</span>
-        <span><i class="chip" style="background:var(--warn)"></i>경미 초과</span>
-        <span><i class="chip" style="background:var(--over)"></i>큰 초과</span>
-        <span><i class="chip" style="background:#fff"></i>미기록</span>
+        <span><i class="chip" style="background:#fff;box-shadow:inset 0 0 0 1px #D8D8D0"></i>미기록</span>
+        <span><i class="chip" style="background:var(--sea);border-radius:50%"></i>오늘 · 예산 이내</span>
+        <span><i class="chip" style="background:var(--lemon)"></i>경미 초과</span>
+        <span><i class="chip" style="background:var(--ink)"></i>큰 초과</span>
       </div>
       <div class="logoutlink"><a href="#" onclick="window.doLogout();return false;">로그아웃</a></div>
     </div>
@@ -173,7 +181,7 @@
 <!-- ================= 바텀시트 ================= -->
 <div class="veil" id="veil" onclick="window.closeSheet()"></div>
 <div class="sheet" id="sheet">
-  <div class="sheet-h"><div class="ttl" id="sheetTtl"></div><div class="sub">합계 <b class="num" id="sheetSum">₩0</b></div></div>
+  <div class="sheet-h"><div class="ttl" id="sheetTtl"></div><div class="sub num" id="sheetSum">₩0</div></div>
   <div class="sheet-body" id="sheetBody"></div>
   <div class="paymethods" id="paymethods"></div>
   <div class="pad">
@@ -185,9 +193,11 @@
       <div class="key sub" onclick="window.k('memo')">메모</div>
       <div class="key" onclick="window.k('7')">7</div><div class="key" onclick="window.k('8')">8</div><div class="key" onclick="window.k('9')">9</div>
       <div class="key sub" onclick="window.k('del')">←</div>
-      <div class="key sub" onclick="window.k('zero')">무지출</div>
-      <div class="key" onclick="window.k('0')">0</div>
-      <div class="key act wide" onclick="window.k('ok')">기록</div>
+    </div>
+    <div class="actrow">
+      <div class="zerobtn" onclick="window.k('zero')">무지출</div>
+      <div class="key0" onclick="window.k('0')">0</div>
+      <div class="actbtn" onclick="window.k('ok')">기록</div>
     </div>
   </div>
 </div>
@@ -499,12 +509,14 @@ function shiftMonth(n){
 }
 function renderMetrics(){
   const m = monthCache.metrics;
+  document.getElementById('heroVal').textContent = m.dailyAllowance!=null ? won(m.dailyAllowance) : '—';
+  document.getElementById('heroSub').innerHTML = '잔액 <b>'+won(m.balance)+'</b> · 하루 기준 <b>'+won(m.dailyBudget)+'</b>';
+  const today = new Date();
+  document.getElementById('heroDeco').textContent = today.getDate();
+
   const M = [
     ['월 예산', won(m.monthlyBudget)],
-    ['하루 기준', won(m.dailyBudget)],
     ['하루 평균', m.dailyAvg!=null ? won(m.dailyAvg) : '—'],
-    ['오늘 허용', m.dailyAllowance!=null ? won(m.dailyAllowance) : '—'],
-    ['잔액', won(m.balance)],
     ['예상 보너스', m.projectedBonus!=null ? won(m.projectedBonus) : '—']
   ];
   document.getElementById('metrics').innerHTML = M.map(function(p){
