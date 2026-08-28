@@ -24,7 +24,7 @@
   <div class="brand">가계부</div>
   <div class="navitem on" data-v="home" onclick="window.go('home')">지출</div>
   <div class="navitem" data-v="assets" onclick="window.go('assets')">자산</div>
-  <div class="navitem" data-v="plan" onclick="window.go('plan')">계획</div>
+  <div class="navitem" data-v="plan" onclick="window.go('plan')">관리</div>
   <div class="logoutlink"><a href="#" onclick="window.doLogout();return false;">로그아웃</a></div>
 </nav>
 <div class="mainwrap">
@@ -91,7 +91,7 @@
 
 <!-- ================= PLAN (계획) ================= -->
 <div id="v-plan" class="view" style="display:none">
-  <div class="topbar"><h1>계획</h1><span class="ym num" style="font-size:12px;color:var(--dim)"></span></div>
+  <div class="topbar"><h1>관리</h1><span class="ym num" style="font-size:12px;color:var(--dim)"></span></div>
   <div class="scroll">
     <div class="notice" id="planTemplateNotice">
       이번 달 계획이 아직 없습니다. 지난달 계획을 불러올까요?
@@ -137,6 +137,7 @@
 <div id="s-fixed" class="screen">
   <div class="sub-h"><button class="back" onclick="window.closeScreen()">‹</button><div class="ttl">고정지출</div></div>
   <div class="scroll" style="padding-bottom:20px">
+    <div id="fxCal" class="fxcalwrap"></div>
     <div id="fxList"></div>
     <div class="fxtot"><span>합계</span><span class="num" id="fxTotal">—</span></div>
     <div class="sect">
@@ -207,7 +208,7 @@
 <div class="tabs">
   <button class="tab on" data-v="home" onclick="window.go('home')">지출</button>
   <button class="tab" data-v="assets" onclick="window.go('assets')">자산</button>
-  <button class="tab" data-v="plan" onclick="window.go('plan')">계획</button>
+  <button class="tab" data-v="plan" onclick="window.go('plan')">관리</button>
 </div>
 </div><!-- /.phone -->
 </div><!-- /.mainwrap -->
@@ -299,6 +300,7 @@ function askDecimal(label, def){
   return n;
 }
 const ASSET_CATS = ['현금','주식','적금','퇴직연금','주택청약'];
+const DONUT_COLORS = ['#12120F','#0B72E0','#5FA3EA','#F5E60A','#C7C7BC'];
 function askCategory(def){
   const v = prompt('집계분류 ('+ASSET_CATS.join('/')+')', def!=null?String(def):'');
   if(v===null) return null;
@@ -384,8 +386,11 @@ function renderVoucherList(){
   document.getElementById('voucherList').innerHTML = voucherCache.map(function(v){
     return '<div class="fx '+(v.active?'':'off')+'">'+
       '<div class="tg" onclick="window.toggleVoucher('+v.id+','+(!v.active)+')"></div>'+
-      '<div class="main" onclick="window.editVoucher('+v.id+')"><div class="t1">'+v.name+'</div><div class="t2">사용 '+won(v.used)+'</div></div>'+
-      '<div class="v num">'+won(v.remaining)+'</div>'+
+      '<div class="main">'+
+        '<div class="t1" onclick="window.editVoucherField('+v.id+",'name')\">"+v.name+'</div>'+
+        '<div class="t2">사용 '+won(v.used)+'</div>'+
+      '</div>'+
+      '<div class="v num" onclick="window.editVoucherField('+v.id+",'initial_amount')\">"+won(v.remaining)+'</div>'+
       '<span class="del" onclick="window.deleteVoucher('+v.id+')">×</span></div>';
   }).join('');
 }
@@ -409,13 +414,17 @@ function toggleVoucher(id, val){
     renderVoucherList();
   });
 }
-function editVoucher(id){
+/* 필드별 개별 수정 — 이름만 고치고 싶어도 금액까지 다 물어보던 옛날 방식 폐기(자산 편집과 동일 패턴) */
+function editVoucherField(id, field){
   const row = voucherCache.find(function(v){return v.id===id;});
   if(!row) return;
-  const name = askRequired('머니 이름', row.name); if(name==null) return;
-  const initial = askAmount('초기 금액', row.initial_amount); if(initial==null) return;
+  let val;
+  if(field==='name'){ val = askRequired('머니 이름', row.name); if(val==null) return; }
+  else if(field==='initial_amount'){ val = askAmount('초기 금액', row.initial_amount); if(val==null) return; }
+  else return;
+  const payload = {}; payload[field] = val;
   guard(async function(){
-    const { error } = await sb.from('voucher').update({ name: name, initial_amount: initial }).eq('id', id);
+    const { error } = await sb.from('voucher').update(payload).eq('id', id);
     if(error) throw error;
     await loadVouchers();
     renderVoucherList();
@@ -460,7 +469,14 @@ function go(v){
   if(v==='assets') guard(loadAssets);
   if(v==='plan') guard(loadPlan);
 }
-function openScreen(id){ document.getElementById(id).classList.add('on'); }
+function openScreen(id){
+  const el = document.getElementById(id);
+  el.classList.add('on');
+  /* 이전에 다른 화면에서 스크롤 내려가 있던 상태가 그대로 남아있던 문제 —
+     새 화면 열 때마다 맨 위로 되돌림. 안 그러면 "로딩 안 됐나?" 하고 계속 기다리게 됨 */
+  const sc = el.querySelector('.scroll');
+  if(sc) sc.scrollTop = 0;
+}
 function closeScreen(){ document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('on'); }); }
 
 /* ---------------- 지출 ----------------
@@ -736,11 +752,36 @@ function k(x){
 }
 
 /* ---------------- 자산 ---------------- */
+/* "달달" 통장 자산 잔액 = 이번 달 월예산(계획 탭 Spending) − 이번 달 누적 달달 지출.
+   무직·구직 중이라 입금 이벤트를 못 쓰고, 매달 1일에 그 달 허용액으로 리셋하는 유저 운용 방식을 그대로 반영.
+   asset.linked_cash = true인 행만 이 공식으로 자동 계산됨(직접 금액 수정 불가). */
+async function computeDalDalBalance(){
+  const today = new Date();
+  const y = today.getFullYear(), m = today.getMonth()+1;
+  const ym = ymKey(y, m);
+  const settings = await getSettings();
+  const { data: planSpending } = await sb.from('plan').select('estimate').eq('year_month', ym).eq('item','Spending').limit(1);
+  const monthlyBudget = (planSpending && planSpending.length && planSpending[0].estimate!=null)
+    ? Number(planSpending[0].estimate) : settings.monthlyBudget;
+  const mm = pad2(m);
+  const totalDays = new Date(y, m, 0).getDate();
+  const start = y+'-'+mm+'-01';
+  const end = y+'-'+mm+'-'+pad2(totalDays);
+  const { data } = await sb.from('expense').select('amount, voucher_id').gte('date', start).lte('date', end);
+  const spent = (data||[]).reduce(function(s,r){ return r.voucher_id ? s : s + Number(r.amount); }, 0);
+  return monthlyBudget - spent;
+}
 async function loadAssets(){
   const settings = await getSettings();
   const { data, error } = await sb.from('asset').select('*').order('sort_order');
   if(error) throw error;
   await loadVouchers();
+  /* asset.linked_cash 컬럼이 아직 없으면(마이그레이션 전) r.linked_cash는 항상 undefined라
+     아래 조건은 자연히 안 타고 지나감 — 마이그레이션 전에 배포해도 안전함 */
+  if(data.some(function(r){return r.linked_cash;})){
+    const dalDalBalance = await computeDalDalBalance();
+    data.forEach(function(r){ if(r.linked_cash){ r.amount = dalDalBalance; } });
+  }
   const groups = [];
   const groupMap = {};
   data.forEach(function(r){
@@ -773,10 +814,13 @@ function buildAssetTable(data){
     g.rows.forEach(function(r){
       const noteId = 'note'+r.id;
       const useText = r.use_name || '용도 추가';
+      const linkTag = r.linked_cash
+        ? '<span class="linktag on" onclick="window.toggleCashLink('+r.id+',false)">🔗 지출과 연동중</span>'
+        : '<span class="linktag" onclick="window.toggleCashLink('+r.id+',true)">지출과 연동</span>';
       h += '<div class="row">'+
         '<div class="main">'+
           '<div class="t1" onclick="window.editAssetField('+r.id+",'detail')\">"+r.detail+'</div>'+
-          '<div class="t2"><span onclick="window.editAssetField('+r.id+",'use')\">"+useText+'</span> · <span onclick="window.editAssetField('+r.id+",'category')\">"+r.category+'</span></div>'+
+          '<div class="t2"><span onclick="window.editAssetField('+r.id+",'use')\">"+useText+'</span> · <span onclick="window.editAssetField('+r.id+",'category')\">"+r.category+'</span> · '+linkTag+'</div>'+
         '</div>'+
         '<div class="v num" onclick="window.editAssetField('+r.id+",'amount')\">"+won(r.amount)+'</div>'+
         '<span class="dot" onclick="window.tm(\''+noteId+'\')"></span>'+
@@ -794,8 +838,13 @@ function buildAssetTable(data){
   h += '<button class="addrow" onclick="window.addAssetItem()">+ 항목 추가</button>';
   document.getElementById('assetTable').innerHTML = h;
   document.getElementById('assetTotal').textContent = won(data.netTotal);
+  /* 도넛 hover 툴팁이 안 미덥다는 피드백 — 색상+퍼센티지를 이 리스트에 항상 보이게 둬서
+     hover 없이도 어떤 색이 뭔지 바로 알 수 있게 함. 도넛과 같은 색 배열(DONUT_COLORS) 사용 */
   document.getElementById('assetCat').innerHTML = data.categories.map(function(c){
-    return '<div class="row"><div class="main"><div class="t1">'+c.name+'</div></div><div class="v num">'+won(c.total)+'</div></div>';
+    const idx = ASSET_CATS.indexOf(c.name);
+    const color = DONUT_COLORS[idx % DONUT_COLORS.length];
+    const pct = data.netTotal ? (c.total/data.netTotal*100) : 0;
+    return '<div class="row"><div class="main"><div class="t1"><span class="swatch" style="background:'+color+'"></span>'+c.name+'</div><div class="t2">'+pct.toFixed(1)+'%</div></div><div class="v num">'+won(c.total)+'</div></div>';
   }).join('');
   document.getElementById('gGoal').textContent = won(data.goal);
   document.getElementById('gBalance').textContent = won(data.netTotal);
@@ -811,7 +860,10 @@ function editAssetField(id, field){
   let val;
   if(field==='use'){ val = askOptional('용도', row.use_name); if(val===null) return; }
   else if(field==='detail'){ val = askRequired('계좌/상세', row.detail); if(val==null) return; }
-  else if(field==='amount'){ val = askAmount('금액', row.amount); if(val==null) return; }
+  else if(field==='amount'){
+    if(row.linked_cash){ showToast('이 항목은 지출과 자동 연동 중이라 직접 수정할 수 없어요. 월예산은 관리 탭에서 조정하세요.', 'err'); return; }
+    val = askAmount('금액', row.amount); if(val==null) return;
+  }
   else if(field==='category'){ val = askCategory(row.category); if(val==null) return; }
   else if(field==='note'){ val = askOptional('비고', row.note); if(val===null) return; }
   else return;
@@ -822,6 +874,17 @@ function editAssetField(id, field){
     const { error } = await sb.from('asset').update(payload).eq('id', id);
     if(error) throw error;
     if(field==='amount' || field==='category'){ await appendSnapshot(); }
+    await loadAssets();
+  });
+}
+function toggleCashLink(id, val){
+  const msg = val
+    ? '이 항목을 지출 캘린더(달달)와 자동 연동할까요?\n매달 1일 기준 그 달 예산에서 캘린더 지출을 뺀 값으로 자동 계산되고, 이후엔 금액을 직접 수정할 수 없게 돼요.'
+    : '자동 연동을 끌까요? 이후엔 금액을 직접 입력해야 해요.';
+  if(!confirm(msg)) return;
+  guard(async function(){
+    const { error } = await sb.from('asset').update({ linked_cash: val }).eq('id', id);
+    if(error) throw error;
     await loadAssets();
   });
 }
@@ -849,6 +912,8 @@ function addAssetItem(){
     await loadAssets();
   });
 }
+/* 자산을 고칠 때마다 매번 새 스냅샷을 쌓으면 하루에 여러 번 고쳤을 때 이력이 너무 지저분해짐 —
+   하루 최대 1개로: 오늘 날짜 스냅샷이 이미 있으면 덮어쓰고, 없을 때만 새로 만듦. */
 async function appendSnapshot(){
   const { data } = await sb.from('asset').select('amount, category');
   const cats = {};
@@ -856,11 +921,17 @@ async function appendSnapshot(){
   (data||[]).forEach(function(r){ cats[r.category] = (cats[r.category]||0) + Number(r.amount); total += Number(r.amount); });
   const today = new Date();
   const dateStr = today.getFullYear()+'-'+pad2(today.getMonth()+1)+'-'+pad2(today.getDate());
-  await sb.from('asset_snapshot').insert({
+  const payload = {
     snap_date: dateStr, net_total: total,
     cash: cats['현금']||0, stock: cats['주식']||0, saving: cats['적금']||0,
     pension: cats['퇴직연금']||0, housing: cats['주택청약']||0
-  });
+  };
+  const { data: existing } = await sb.from('asset_snapshot').select('id').eq('snap_date', dateStr).limit(1);
+  if(existing && existing.length){
+    await sb.from('asset_snapshot').update(payload).eq('id', existing[0].id);
+  } else {
+    await sb.from('asset_snapshot').insert(payload);
+  }
 }
 function donut(vals, colors, center, labels){
   const R=52, C=2*Math.PI*R;
@@ -878,9 +949,9 @@ function donut(vals, colors, center, labels){
     'font-size="15" font-weight="700" font-family="Space Mono,monospace">'+center+'</text></svg>';
 }
 function buildDonuts(data){
-  const g = ['#12120F','#0B72E0','#5FA3EA','#F5E60A','#C7C7BC'];
+  const colors = data.categories.map(function(c){ return DONUT_COLORS[ASSET_CATS.indexOf(c.name) % DONUT_COLORS.length]; });
   const labels = data.categories.map(function(c){ return c.name+' '+won(c.total); });
-  document.getElementById('d1').innerHTML = donut(data.categories.map(function(c){return c.total;}), g, '', labels);
+  document.getElementById('d1').innerHTML = donut(data.categories.map(function(c){return c.total;}), colors, '', labels);
   document.getElementById('d2').innerHTML = donut([data.netTotal, Math.max(data.left,0)], ['#12120F','#EEEEE7'],
     (data.pct*100).toFixed(1)+'%', ['현재 '+won(data.netTotal), '남은 목표 '+won(Math.max(data.left,0))]);
 }
@@ -921,6 +992,19 @@ async function loadPlan(){
   const spentAuto = (expData||[]).reduce(function(s,r){return s+Number(r.amount);},0);
   data.forEach(function(r){ if(r.item==='Spending') r.actual = spentAuto; });
 
+  /* 고정지출 화면의 활성 항목들을 계획 표에 항목별로 자동 디폴트 행으로 끼워넣음(집계 한 줄이 아니라 개별로) —
+     매달 손으로 재입력 안 해도 되게. 이 행들은 fixed_cost가 원본이라 여기선 수정 불가(id=null이라 기존
+     "템플릿 행 잠금" 로직에 자연히 걸림), 구독 해지/변경은 고정지출 화면에서. */
+  const { data: fxRows } = await sb.from('fixed_cost').select('*').eq('active', true);
+  if(fxRate==null && (fxRows||[]).some(function(r){return r.currency==='USD';})){ fxRate = await getUsdKrwRate(); }
+  const autoRows = (fxRows||[]).map(function(r){
+    const amt = fxKrw(r);
+    return { id: null, item: r.name, estimate: amt, actual: amt, auto: true };
+  });
+  const incomeIdx = data.findIndex(function(r){ return r.item==='Income'; });
+  const insertAt = incomeIdx>=0 ? incomeIdx+1 : 0;
+  data = data.slice(0, insertAt).concat(autoRows, data.slice(insertAt));
+
   const expensesEstimate = data.reduce(function(s,r){ return r.item==='Income' ? s : s + (Number(r.estimate)||0); },0);
   const incomeRow = data.find(function(r){return r.item==='Income';});
   const incomeEstimate = incomeRow ? (Number(incomeRow.estimate)||0) : 0;
@@ -934,13 +1018,16 @@ function renderPlan(){
   document.getElementById('planTemplateNotice').style.display = data.isTemplate ? 'block' : 'none';
   const LOCKED = (r)=> r.item==='Income' || r.item==='Spending';
   const rowsHtml = data.rows.map(function(r){
-    const label = (r.item==='Income') ? 'Income →' : r.item;
+    const label = (r.item==='Income') ? 'Income →' : (r.auto ? r.item+' <span class="autotag">고정</span>' : r.item);
     const nameCell = (data.isTemplate || r.id==null || LOCKED(r)) ? label : '<span onclick="window.renamePlanItem('+r.id+',\''+r.item.replace(/'/g,"\\'")+'\')" style="cursor:pointer">'+label+'</span>';
     const estStr = r.estimate!=null ? won(r.estimate) : '—';
-    const estCell = data.isTemplate ? '<td class="num empty">'+estStr+'</td>'
+    const estCell = r.auto ? '<td class="num auto">'+estStr+'</td>'
+      : data.isTemplate ? '<td class="num empty">'+estStr+'</td>'
       : '<td class="num" onclick="window.editPlan('+r.id+",'estimate',"+(r.estimate||0)+')">'+estStr+'</td>';
     let actCell;
-    if(r.item==='Spending'){
+    if(r.auto){
+      actCell = '<td class="num auto">'+won(r.actual)+'</td>';
+    } else if(r.item==='Spending'){
       actCell = '<td class="num auto">'+won(r.actual)+'</td>';
     } else if(data.isTemplate){
       actCell = '<td class="num empty">—</td>';
@@ -1017,40 +1104,110 @@ function addPlanRow(){
 }
 
 /* ---------------- 고정지출 ---------------- */
+/* 달러 항목 환산용 환율 — 하루 1번만 외부 API 조회, localStorage에 캐싱.
+   API가 실패해도 마지막으로 알던 값이나 대략값으로라도 계산은 되게(완전히 막히지 않게) 함. */
+let fxRate = null;
+async function getUsdKrwRate(){
+  try {
+    const cached = JSON.parse(localStorage.getItem('fxRate')||'null');
+    const today = new Date().toISOString().slice(0,10);
+    if(cached && cached.date===today && cached.rate) return cached.rate;
+  } catch(e){}
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    const j = await res.json();
+    const rate = j && j.rates && j.rates.KRW;
+    if(rate){
+      try { localStorage.setItem('fxRate', JSON.stringify({date:new Date().toISOString().slice(0,10), rate:rate})); } catch(e){}
+      return rate;
+    }
+  } catch(e){}
+  try {
+    const cached = JSON.parse(localStorage.getItem('fxRate')||'null');
+    if(cached && cached.rate) return cached.rate;
+  } catch(e){}
+  return 1350; /* 최후 fallback 대략값 */
+}
+function fxKrw(r){
+  if(r.currency==='USD' && r.amount!=null){ return Math.round(Number(r.amount) * (fxRate||1350)); }
+  return Number(r.amount)||0;
+}
 function openFixed(){
   openScreen('s-fixed');
   document.getElementById('fxList').innerHTML = '<div class="loading">불러오는 중</div>';
-  guard(async function(){
-    const { data, error } = await sb.from('fixed_cost').select('*').order('id');
-    if(error) throw error;
-    fixedCache = data;
-    renderFixed();
-  });
+  guard(refreshFixed);
 }
 function renderFixed(){
-  const rows = fixedCache;
+  /* 토글 켜진(사용 중인) 항목이 위로, 꺼둔 항목이 아래로 */
+  const rows = fixedCache.slice().sort(function(a,b){ return (b.active?1:0) - (a.active?1:0); });
   document.getElementById('fxList').innerHTML = rows.map(function(r){
-    const meta = [r.category, r.pay_day?r.pay_day+'일':'', (r.source||'') + (r.cancel_date?'('+r.cancel_date+')':'')].filter(Boolean).join(' · ');
+    const isUsd = r.currency==='USD';
+    const catTxt = r.category || '분류 추가';
+    const dayTxt = r.pay_day ? r.pay_day+'일' : '결제일 추가';
+    const srcTxt = r.source || '출처 추가';
+    const cancelTxt = r.cancel_date ? '해지 '+r.cancel_date : '해지일';
+    const amtDisplay = r.amount!=null ? won(fxKrw(r)) : '—';
+    const usdTag = isUsd ? '<span class="fxtag">$'+Number(r.amount).toLocaleString('en-US')+'</span>' : '';
     return '<div class="fx '+(r.active?'':'off')+'">'+
       '<div class="tg" onclick="window.toggleFx('+r.id+','+(!r.active)+')"></div>'+
-      '<div class="main" onclick="window.editFx('+r.id+')"><div class="t1">'+r.name+'</div><div class="t2">'+(meta||'—')+'</div></div>'+
-      '<div class="v num">'+(r.amount!=null?won(r.amount):'—')+'</div>'+
+      '<div class="main">'+
+        '<div class="t1" onclick="window.editFxField('+r.id+",'name')\">"+r.name+'</div>'+
+        '<div class="t2">'+
+          '<span onclick="window.editFxField('+r.id+",'category')\">"+catTxt+'</span> · '+
+          '<span onclick="window.editFxField('+r.id+",'pay_day')\">"+dayTxt+'</span> · '+
+          '<span onclick="window.editFxField('+r.id+",'source')\">"+srcTxt+'</span> · '+
+          '<span onclick="window.editFxField('+r.id+",'cancel_date')\">"+cancelTxt+'</span> · '+
+          '<span class="curbadge" onclick="window.toggleFxCurrency('+r.id+')">'+(isUsd?'USD':'KRW')+'</span>'+
+        '</div>'+
+      '</div>'+
+      '<div class="v num" onclick="window.editFxField('+r.id+",'amount')\">"+amtDisplay+usdTag+'</div>'+
       '<span class="del" onclick="window.deleteFx('+r.id+')">×</span></div>';
   }).join('');
-  const total = rows.reduce(function(s,r){ return r.active ? s+(Number(r.amount)||0) : s; },0);
+  const total = rows.reduce(function(s,r){ return r.active ? s+fxKrw(r) : s; },0);
   document.getElementById('fxTotal').textContent = won(total);
   const bySource = {};
   rows.forEach(function(r){
-    if(r.active && r.source){ const key=r.source.split('(')[0].trim(); bySource[key]=(bySource[key]||0)+(Number(r.amount)||0); }
+    if(r.active && r.source){ const key=r.source.split('(')[0].trim(); bySource[key]=(bySource[key]||0)+fxKrw(r); }
   });
   document.getElementById('fxBySource').innerHTML = Object.keys(bySource).map(function(key){
     return '<div class="row"><div class="main"><div class="t1">'+key+'</div></div><div class="v num">'+won(bySource[key])+'</div></div>';
   }).join('');
+  renderFixedCal();
+}
+/* 이번 달에 언제 어떤 고정비가 나가는지 한눈에 — 결제일이 숫자로 지정된 활성 항목만 표시("상시"/미지정은 제외) */
+function renderFixedCal(){
+  const rows = (fixedCache||[]).filter(function(r){ return r.active && r.pay_day && /^\d+$/.test(String(r.pay_day)); });
+  const byDay = {};
+  rows.forEach(function(r){ const d = parseInt(r.pay_day,10); if(!byDay[d]) byDay[d]=[]; byDay[d].push(r); });
+  const today = new Date();
+  const y = today.getFullYear(), m = today.getMonth()+1;
+  const totalDays = new Date(y, m, 0).getDate();
+  const first = new Date(y, m-1, 1);
+  const lead = (first.getDay()+6)%7;
+  let html = '<div class="dow mini"><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div class="we">토</div><div class="we">일</div></div><div class="cal mini">';
+  for(let i=0;i<lead;i++) html+='<div class="cell out"></div>';
+  for(let d=1; d<=totalDays; d++){
+    const items = byDay[d];
+    const isToday = today.getDate()===d;
+    let cls='cell'+(isToday?' today':'')+(items?' due':'');
+    let inner = '<div class="d">'+d+'</div>';
+    if(items){
+      const sum = items.reduce(function(s,r){ return s+fxKrw(r); },0);
+      inner += '<div class="amt num">'+won(sum)+'</div>';
+    }
+    const tip = items ? items.map(function(r){return r.name;}).join(', ') : '';
+    html += '<div class="'+cls+'" title="'+tip+'">'+inner+'</div>';
+  }
+  const tail=(7-((lead+totalDays)%7))%7;
+  for(let i=0;i<tail;i++) html+='<div class="cell out"></div>';
+  html += '</div>';
+  document.getElementById('fxCal').innerHTML = html;
 }
 async function refreshFixed(){
   const { data, error } = await sb.from('fixed_cost').select('*').order('id');
   if(error) throw error;
   fixedCache = data;
+  if(fxRate==null && data.some(function(r){return r.currency==='USD';})){ fxRate = await getUsdKrwRate(); }
   renderFixed();
 }
 function toggleFx(id, val){
@@ -1060,26 +1217,38 @@ function toggleFx(id, val){
     await refreshFixed();
   });
 }
-function editFx(id){
+function toggleFxCurrency(id){
   const row = (fixedCache||[]).find(function(r){return r.id===id;});
   if(!row) return;
-  const name = askRequired('항목 이름', row.name);
-  if(name==null) return;
-  const category = askOptional('분류', row.category);
-  if(category===null) return;
-  const payDay = askOptional('결제일 (예: 15, 상시)', row.pay_day);
-  if(payDay===null) return;
-  const amount = askAmount('금액', row.amount||0);
-  if(amount==null) return;
-  const source = askOptional('자금출처', row.source);
-  if(source===null) return;
-  const cancelDate = askOptional('해지일 (YYYY-MM-DD, 없으면 비워두기)', row.cancel_date);
-  if(cancelDate===null) return;
+  const next = row.currency==='USD' ? 'KRW' : 'USD';
+  if(!confirm('통화를 '+next+'로 바꿀까요? 단위만 바뀌고 숫자는 그대로 유지돼요 — 필요하면 금액도 다시 입력해주세요.')) return;
   guard(async function(){
-    const { error } = await sb.from('fixed_cost').update({
-      name: name, category: category||null, pay_day: payDay||null,
-      amount: amount, source: source||null, cancel_date: cancelDate||null
-    }).eq('id', id);
+    const { error } = await sb.from('fixed_cost').update({ currency: next }).eq('id', id);
+    if(error) throw error;
+    if(next==='USD' && fxRate==null){ fxRate = await getUsdKrwRate(); }
+    await refreshFixed();
+  });
+}
+/* 필드별 개별 수정 — 이름 하나 고치겠다고 분류·결제일·금액·출처·해지일 전부 순서대로 물어보던 옛날 방식 폐기 */
+function editFxField(id, field){
+  const row = (fixedCache||[]).find(function(r){return r.id===id;});
+  if(!row) return;
+  let val;
+  if(field==='name'){ val = askRequired('항목 이름', row.name); if(val==null) return; }
+  else if(field==='category'){ val = askOptional('분류', row.category); if(val===null) return; }
+  else if(field==='pay_day'){ val = askOptional('결제일 (예: 15, 상시)', row.pay_day); if(val===null) return; }
+  else if(field==='amount'){
+    const label = row.currency==='USD' ? '금액 ($, 소수점 가능)' : '금액';
+    val = row.currency==='USD' ? askDecimal(label, row.amount||0) : askAmount(label, row.amount||0);
+    if(val==null) return;
+  }
+  else if(field==='source'){ val = askOptional('자금출처', row.source); if(val===null) return; }
+  else if(field==='cancel_date'){ val = askOptional('해지일 (YYYY-MM-DD, 없으면 비워두기)', row.cancel_date); if(val===null) return; }
+  else return;
+  const payload = {};
+  payload[field] = (field==='name' || field==='amount') ? val : (val||null);
+  guard(async function(){
+    const { error } = await sb.from('fixed_cost').update(payload).eq('id', id);
     if(error) throw error;
     await refreshFixed();
   });
@@ -1119,20 +1288,34 @@ let annualCache = [];
 function renderAnnual(rows){
   annualCache = rows;
   document.getElementById('annualList').innerHTML = rows.map(function(r){
-    return '<div class="fx"><div class="main" onclick="window.editAnnual('+r.id+')"><div class="t1">'+r.name+'</div><div class="t2">'+r.category+' · '+r.pay_date+' · '+r.source+'</div></div>'+
-      '<div class="v num">'+won(r.amount)+'</div><span class="del" onclick="window.deleteAnnual('+r.id+')">×</span></div>';
+    return '<div class="fx">'+
+      '<div class="main">'+
+        '<div class="t1" onclick="window.editAnnualField('+r.id+",'name')\">"+r.name+'</div>'+
+        '<div class="t2">'+
+          '<span onclick="window.editAnnualField('+r.id+",'category')\">"+(r.category||'분류')+'</span> · '+
+          '<span onclick="window.editAnnualField('+r.id+",'pay_date')\">"+(r.pay_date||'결제일')+'</span> · '+
+          '<span onclick="window.editAnnualField('+r.id+",'source')\">"+(r.source||'출처')+'</span>'+
+        '</div>'+
+      '</div>'+
+      '<div class="v num" onclick="window.editAnnualField('+r.id+",'amount')\">"+won(r.amount)+'</div>'+
+      '<span class="del" onclick="window.deleteAnnual('+r.id+')">×</span></div>';
   }).join('');
 }
-function editAnnual(id){
+/* 필드별 개별 수정 — 연간고정지출도 자산/고정지출과 같은 패턴으로 통일 */
+function editAnnualField(id, field){
   const row = annualCache.find(function(r){return r.id===id;});
   if(!row) return;
-  const name = askRequired('항목 이름', row.name); if(name==null) return;
-  const category = askOptional('분류', row.category); if(category===null) return;
-  const payDate = askOptional('결제일 (YYYY-MM-DD)', row.pay_date); if(payDate===null) return;
-  const amount = askAmount('금액', row.amount); if(amount==null) return;
-  const source = askOptional('자금출처', row.source); if(source===null) return;
+  let val;
+  if(field==='name'){ val = askRequired('항목 이름', row.name); if(val==null) return; }
+  else if(field==='category'){ val = askOptional('분류', row.category); if(val===null) return; }
+  else if(field==='pay_date'){ val = askOptional('결제일 (YYYY-MM-DD)', row.pay_date); if(val===null) return; }
+  else if(field==='amount'){ val = askAmount('금액', row.amount); if(val==null) return; }
+  else if(field==='source'){ val = askOptional('자금출처', row.source); if(val===null) return; }
+  else return;
+  const payload = {};
+  payload[field] = (field==='name' || field==='amount') ? val : (val||null);
   guard(async function(){
-    const { error } = await sb.from('annual_fixed_cost').update({ name: name, category: category||null, pay_date: payDate||null, amount: amount, source: source||null }).eq('id', id);
+    const { error } = await sb.from('annual_fixed_cost').update(payload).eq('id', id);
     if(error) throw error;
     const { data } = await sb.from('annual_fixed_cost').select('*').order('id');
     renderAnnual(data||[]);
@@ -1196,12 +1379,12 @@ function editSetting(key, current, isDecimal){
 /* ---------------- 전역 노출 (inline onclick에서 쓰려면 필요) ---------------- */
 Object.assign(window, {
   doLogin, doLogout, shiftMonth, openSheet, closeSheet, k, toggleMemo, editEntry, removeEntry, clearMemo,
-  go, openScreen, closeScreen, editAssetField, deleteAsset, addAssetItem, tm, openSnapshots,
+  go, openScreen, closeScreen, editAssetField, deleteAsset, addAssetItem, tm, openSnapshots, toggleCashLink,
   editPlan, renamePlanItem, deletePlanItem, copyPlanTemplate, addPlanRow,
-  openFixed, toggleFx, editFx, deleteFx, addFxItem,
-  openAnnual, editAnnual, deleteAnnual, addAnnualItem,
+  openFixed, toggleFx, editFxField, toggleFxCurrency, deleteFx, addFxItem,
+  openAnnual, editAnnualField, deleteAnnual, addAnnualItem,
   openSettings, editSetting,
-  openVoucher, toggleVoucher, editVoucher, addVoucherItem, quickAddVoucher, deleteVoucher, selectPay,
+  openVoucher, toggleVoucher, editVoucherField, addVoucherItem, quickAddVoucher, deleteVoucher, selectPay,
   toggleCalMode
 });
 
