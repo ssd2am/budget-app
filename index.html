@@ -464,6 +464,9 @@ function renderPayMethods(){
 }
 function selectPay(id){ selectedVoucherId = id; renderPayMethods(); }
 function go(v){
+  /* 고정지출/머니 같은 서브 화면이 열려있는 채로 좌측 대분류를 클릭하면 그 화면이 위에 그대로 남아있어서
+     탭이 안 바뀐 것처럼 보이던 문제 — 대분류 이동할 땐 열려있는 서브 화면을 항상 닫는다 */
+  closeScreen();
   ['home','assets','plan'].forEach(function(x){ document.getElementById('v-'+x).style.display = (x===v?'block':'none'); });
   document.querySelectorAll('.tab, .navitem').forEach(function(t){ t.classList.toggle('on', t.dataset.v===v); });
   if(v==='assets') guard(loadAssets);
@@ -993,13 +996,22 @@ async function loadPlan(){
   data.forEach(function(r){ if(r.item==='Spending') r.actual = spentAuto; });
 
   /* 고정지출 화면의 활성 항목들을 계획 표에 항목별로 자동 디폴트 행으로 끼워넣음(집계 한 줄이 아니라 개별로) —
-     매달 손으로 재입력 안 해도 되게. 이 행들은 fixed_cost가 원본이라 여기선 수정 불가(id=null이라 기존
-     "템플릿 행 잠금" 로직에 자연히 걸림), 구독 해지/변경은 고정지출 화면에서. */
+     매달 손으로 재입력 안 해도 되게. estimate는 항상 고정지출 화면 금액을 실시간으로 따라가고(수정 불가),
+     actual은 통신비·교통비처럼 매달 실제 청구액이 달라질 수 있어서 따로 입력 가능해야 함:
+     이 달에 실제값을 입력한 적 있으면(=plan에 진짜 row가 있으면) 그 값을 쓰고 계속 편집 가능,
+     아직 없으면 "—"로 두고 탭하면 새로 입력받아 plan에 실제 row를 만듦(createFxPlanActual). */
   const { data: fxRows } = await sb.from('fixed_cost').select('*').eq('active', true);
   if(fxRate==null && (fxRows||[]).some(function(r){return r.currency==='USD';})){ fxRate = await getUsdKrwRate(); }
-  const autoRows = (fxRows||[]).map(function(r){
+  const autoRows = [];
+  (fxRows||[]).forEach(function(r){
     const amt = fxKrw(r);
-    return { id: null, item: r.name, estimate: amt, actual: amt, auto: true };
+    const existing = data.find(function(p){ return p.id!=null && p.item===r.name; });
+    if(existing){
+      existing.estimate = amt;
+      existing.auto = true;
+    } else {
+      autoRows.push({ id: null, item: r.name, estimate: amt, actual: null, auto: true });
+    }
   });
   const incomeIdx = data.findIndex(function(r){ return r.item==='Income'; });
   const insertAt = incomeIdx>=0 ? incomeIdx+1 : 0;
@@ -1016,19 +1028,22 @@ async function loadPlan(){
 function renderPlan(){
   const data = planCache;
   document.getElementById('planTemplateNotice').style.display = data.isTemplate ? 'block' : 'none';
-  const LOCKED = (r)=> r.item==='Income' || r.item==='Spending';
+  const LOCKED = (r)=> r.item==='Income' || r.item==='Spending' || r.auto;
   const rowsHtml = data.rows.map(function(r){
     const label = (r.item==='Income') ? 'Income →' : (r.auto ? r.item+' <span class="autotag">고정</span>' : r.item);
     const nameCell = (data.isTemplate || r.id==null || LOCKED(r)) ? label : '<span onclick="window.renamePlanItem('+r.id+',\''+r.item.replace(/'/g,"\\'")+'\')" style="cursor:pointer">'+label+'</span>';
     const estStr = r.estimate!=null ? won(r.estimate) : '—';
+    /* estimate는 고정비 항목이면 항상 고정지출 화면 금액을 그대로 따라감(잠금) — actual만 매달 실제 청구액대로 따로 입력 */
     const estCell = r.auto ? '<td class="num auto">'+estStr+'</td>'
       : data.isTemplate ? '<td class="num empty">'+estStr+'</td>'
       : '<td class="num" onclick="window.editPlan('+r.id+",'estimate',"+(r.estimate||0)+')">'+estStr+'</td>';
     let actCell;
-    if(r.auto){
+    if(r.item==='Spending'){
       actCell = '<td class="num auto">'+won(r.actual)+'</td>';
-    } else if(r.item==='Spending'){
-      actCell = '<td class="num auto">'+won(r.actual)+'</td>';
+    } else if(r.auto && r.id==null){
+      /* 고정비 자동 행인데 이 달 실제값을 아직 입력 안 한 상태 — 탭하면 새로 입력받아 plan에 실제 행을 만듦 */
+      actCell = data.isTemplate ? '<td class="num empty">—</td>'
+        : '<td class="num" onclick="window.createFxPlanActual(\''+r.item.replace(/'/g,"\\'")+'\','+(r.estimate||0)+')">—</td>';
     } else if(data.isTemplate){
       actCell = '<td class="num empty">—</td>';
     } else {
@@ -1046,6 +1061,19 @@ function renderPlan(){
   document.getElementById('planTable').innerHTML = rowsHtml +
     '<tr class="sum"><td>Expenses →</td><td class="num">'+won(data.expensesEstimate)+'</td><td class="num">'+won(sumActual)+'</td><td></td></tr>'+
     '<tr class="sum"><td>Remainder →</td><td class="num">'+won(data.remainderEstimate)+'</td><td class="num">'+won(remainderActual)+'</td><td></td></tr>';
+}
+/* 고정비 자동 행 중 이 달 실제값을 처음 입력하는 경우 — plan에 실제 행이 아직 없으니 새로 만듦.
+   이후부터는 이 행에 진짜 id가 생겨서 editPlan으로 평범하게 수정됨 */
+function createFxPlanActual(itemName, estimate){
+  const val = askAmount('실제 지출 금액 (' + itemName + ')', estimate);
+  if(val==null) return;
+  guard(async function(){
+    const ym = ymKey(cur.y, cur.m);
+    const maxOrder = planCache.rows.reduce(function(m,r){return Math.max(m, r.sort_order||0);},0);
+    const { error } = await sb.from('plan').insert({ year_month: ym, item: itemName, estimate: estimate, actual: val, sort_order: maxOrder+1 });
+    if(error) throw error;
+    await loadPlan();
+  });
 }
 function editPlan(id, field, current){
   const n = askAmount((field==='estimate'?'예상':'실제')+' 금액 입력', current);
@@ -1175,10 +1203,13 @@ function renderFixed(){
   renderFixedCal();
 }
 /* 이번 달에 언제 어떤 고정비가 나가는지 한눈에 — 결제일이 숫자로 지정된 활성 항목만 표시("상시"/미지정은 제외) */
+let fxCalByDay = {};
+let fxCalSelectedDay = null;
 function renderFixedCal(){
   const rows = (fixedCache||[]).filter(function(r){ return r.active && r.pay_day && /^\d+$/.test(String(r.pay_day)); });
   const byDay = {};
   rows.forEach(function(r){ const d = parseInt(r.pay_day,10); if(!byDay[d]) byDay[d]=[]; byDay[d].push(r); });
+  fxCalByDay = byDay;
   const today = new Date();
   const y = today.getFullYear(), m = today.getMonth()+1;
   const totalDays = new Date(y, m, 0).getDate();
@@ -1196,12 +1227,27 @@ function renderFixedCal(){
       inner += '<div class="amt num">'+won(sum)+'</div>';
     }
     const tip = items ? items.map(function(r){return r.name;}).join(', ') : '';
-    html += '<div class="'+cls+'" title="'+tip+'">'+inner+'</div>';
+    const onclick = items ? ' onclick="window.showFxCalDay('+d+')"' : '';
+    html += '<div class="'+cls+'" title="'+tip+'"'+onclick+'>'+inner+'</div>';
   }
   const tail=(7-((lead+totalDays)%7))%7;
   for(let i=0;i<tail;i++) html+='<div class="cell out"></div>';
-  html += '</div>';
+  html += '</div><div id="fxCalDetail"></div>';
   document.getElementById('fxCal').innerHTML = html;
+  fxCalSelectedDay = null;
+}
+/* 미니 캘린더에서 결제일 있는 날짜를 탭하면 그날 나가는 항목들을 아래에 펼쳐서 보여줌(다시 탭하면 접힘) */
+function showFxCalDay(d){
+  const el = document.getElementById('fxCalDetail');
+  if(!el) return;
+  if(fxCalSelectedDay === d){ fxCalSelectedDay = null; el.innerHTML = ''; return; }
+  fxCalSelectedDay = d;
+  const items = fxCalByDay[d] || [];
+  el.innerHTML = '<div class="fxcaldetail-hdr">'+d+'일</div>' + items.map(function(r){
+    const isUsd = r.currency==='USD';
+    const usdTag = isUsd ? ' <span class="fxtag" style="display:inline">$'+Number(r.amount).toLocaleString('en-US')+'</span>' : '';
+    return '<div class="row"><div class="main"><div class="t1">'+r.name+'</div></div><div class="v num">'+won(fxKrw(r))+usdTag+'</div></div>';
+  }).join('');
 }
 async function refreshFixed(){
   const { data, error } = await sb.from('fixed_cost').select('*').order('id');
@@ -1380,8 +1426,8 @@ function editSetting(key, current, isDecimal){
 Object.assign(window, {
   doLogin, doLogout, shiftMonth, openSheet, closeSheet, k, toggleMemo, editEntry, removeEntry, clearMemo,
   go, openScreen, closeScreen, editAssetField, deleteAsset, addAssetItem, tm, openSnapshots, toggleCashLink,
-  editPlan, renamePlanItem, deletePlanItem, copyPlanTemplate, addPlanRow,
-  openFixed, toggleFx, editFxField, toggleFxCurrency, deleteFx, addFxItem,
+  editPlan, renamePlanItem, deletePlanItem, copyPlanTemplate, addPlanRow, createFxPlanActual,
+  openFixed, toggleFx, editFxField, toggleFxCurrency, deleteFx, addFxItem, showFxCalDay,
   openAnnual, editAnnualField, deleteAnnual, addAnnualItem,
   openSettings, editSetting,
   openVoucher, toggleVoucher, editVoucherField, addVoucherItem, quickAddVoucher, deleteVoucher, selectPay,
