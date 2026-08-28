@@ -186,6 +186,7 @@
   <div class="paymethods" id="paymethods"></div>
   <div class="pad">
     <div class="padval num zero" id="padVal">0</div>
+    <div class="padmemo" id="padMemo"></div>
     <div class="keys">
       <div class="key" onclick="window.k('1')">1</div><div class="key" onclick="window.k('2')">2</div><div class="key" onclick="window.k('3')">3</div>
       <div class="key sub" onclick="window.k('-')">± 환급</div>
@@ -193,10 +194,10 @@
       <div class="key sub" onclick="window.k('memo')">메모</div>
       <div class="key" onclick="window.k('7')">7</div><div class="key" onclick="window.k('8')">8</div><div class="key" onclick="window.k('9')">9</div>
       <div class="key sub" onclick="window.k('del')">←</div>
+      <div class="key wide" onclick="window.k('00')">00</div><div class="key wide" onclick="window.k('0')">0</div>
     </div>
     <div class="actrow">
       <div class="zerobtn" onclick="window.k('zero')">무지출</div>
-      <div class="key0" onclick="window.k('0')">0</div>
       <div class="actbtn" onclick="window.k('ok')">기록</div>
     </div>
   </div>
@@ -384,8 +385,21 @@ function renderVoucherList(){
     return '<div class="fx '+(v.active?'':'off')+'">'+
       '<div class="tg" onclick="window.toggleVoucher('+v.id+','+(!v.active)+')"></div>'+
       '<div class="main" onclick="window.editVoucher('+v.id+')"><div class="t1">'+v.name+'</div><div class="t2">사용 '+won(v.used)+'</div></div>'+
-      '<div class="v num">'+won(v.remaining)+'</div></div>';
+      '<div class="v num">'+won(v.remaining)+'</div>'+
+      '<span class="del" onclick="window.deleteVoucher('+v.id+')">×</span></div>';
   }).join('');
+}
+function deleteVoucher(id){
+  if(!confirm('이 머니를 삭제할까요? 이 머니로 기록된 지출이 있으면 삭제할 수 없어요 — 그럴 땐 꺼두기(토글)를 이용해주세요.')) return;
+  guard(async function(){
+    const { error } = await sb.from('voucher').delete().eq('id', id);
+    if(error){
+      if(error.code==='23503'){ throw new Error('이 머니로 기록된 지출이 있어서 삭제할 수 없어요. 대신 꺼두기(비활성화)를 써주세요.'); }
+      throw error;
+    }
+    await loadVouchers();
+    renderVoucherList();
+  });
 }
 function toggleVoucher(id, val){
   guard(async function(){
@@ -583,9 +597,13 @@ function openSheet(key){
   document.getElementById('sheetTtl').textContent = (d.getMonth()+1)+'월 '+d.getDate()+'일 ('+DOW[d.getDay()]+')';
   drawSheetBody();
   renderPayMethods();
+  renderPadMemo();
   padDraw();
   document.getElementById('veil').classList.add('on');
   document.getElementById('sheet').classList.add('on');
+  document.addEventListener('keydown', handleSheetKeydown);
+  /* 결제수단 칩이 초기 로딩 경합 때문에 비어 보이는 문제 방지 — 시트 열릴 때마다 최신 목록으로 조용히 갱신 */
+  loadVouchers().then(renderPayMethods).catch(function(){});
 }
 function closeSheet(){
   if(buf){
@@ -594,6 +612,14 @@ function closeSheet(){
   buf=''; negative=false; memoText='';
   document.getElementById('veil').classList.remove('on');
   document.getElementById('sheet').classList.remove('on');
+  document.removeEventListener('keydown', handleSheetKeydown);
+}
+function handleSheetKeydown(e){
+  if(e.key>='0' && e.key<='9'){ e.preventDefault(); k(e.key); }
+  else if(e.key==='Backspace'){ e.preventDefault(); k('del'); }
+  else if(e.key==='Enter'){ e.preventDefault(); k('ok'); }
+  else if(e.key==='-' || e.key==='='){ e.preventDefault(); k('-'); }
+  else if(e.key==='Escape'){ closeSheet(); }
 }
 function drawSheetBody(){
   const es = monthCache.days[sheetDate];
@@ -613,17 +639,32 @@ function drawSheetBody(){
   if(cashOnly.length===0 && voucherSum===0){ body.innerHTML = '<div class="empty-note">무지출로 기록된 날</div>'; return; }
   body.innerHTML = es.map(function(e,i){
     const tag = e.voucherId ? '<span class="paytag">'+e.voucherName+'</span>' : '';
-    let h = '<div class="entry"><div class="e-amt num '+(e.amount<0?'neg':'')+'" onclick="window.toggleMemo('+i+')">'+
-      (e.amount<0 ? '+'+won(-e.amount) : won(e.amount))+'</div>'+ tag +
-      (e.memo ? '<span class="dot" onclick="window.toggleMemo('+i+')"></span>' : '')+
+    const dot = e.memo ? '<span class="dot" onclick="window.toggleMemo('+i+')"></span>' : '';
+    let h = '<div class="entry"><div class="e-amt num '+(e.amount<0?'neg':'')+'" onclick="window.editEntry('+i+')">'+
+      (e.amount<0 ? '+'+won(-e.amount) : won(e.amount))+'</div>'+ tag + dot +
       '<span class="del" onclick="window.removeEntry('+e.id+')">×</span></div>';
-    if(e.memo && e._open) h += '<div class="memobox">'+e.memo+'</div>';
+    if(e.memo) h += '<div class="memobox entrymemo'+(e._open?' open':'')+'" onclick="window.toggleMemo('+i+')">'+e.memo+'</div>';
     return h;
   }).join('');
 }
 function toggleMemo(i){
   const es = monthCache.days[sheetDate];
   if(es[i].memo){ es[i]._open = !es[i]._open; drawSheetBody(); }
+}
+function editEntry(i){
+  const es = monthCache.days[sheetDate];
+  const e = es && es[i];
+  if(!e) return;
+  const amount = askAmount('금액 수정', e.amount);
+  if(amount==null) return;
+  const memo = askOptional('메모', e.memo);
+  if(memo===null) return;
+  guard(async function(){
+    const { error } = await sb.from('expense').update({ amount: amount, memo: memo||null }).eq('id', e.id);
+    if(error) throw error;
+    await loadMonth();
+    drawSheetBody();
+  });
 }
 function removeEntry(id){
   if(!confirm('삭제할까요?')) return;
@@ -642,8 +683,20 @@ function padDraw(){
   el.textContent = (negative?'-':'') + v.toLocaleString('ko-KR');
   el.classList.toggle('zero', !buf);
 }
+function renderPadMemo(){
+  const el = document.getElementById('padMemo');
+  if(memoText){
+    el.style.display = 'block';
+    el.innerHTML = '메모: '+memoText+' <span class="memoclear" onclick="event.stopPropagation();window.clearMemo()">×</span>';
+  } else {
+    el.style.display = 'none';
+    el.innerHTML = '';
+  }
+}
+function clearMemo(){ memoText=''; renderPadMemo(); }
 function k(x){
   if(/^\d$/.test(x)){ if(buf.length<9) buf+=x; padDraw(); return; }
+  if(x==='00'){ if(buf && buf.length<8){ buf+='00'; padDraw(); } return; }
   if(x==='del'){ buf = buf.slice(0,-1); padDraw(); return; }
   if(x==='-'){ negative = !negative; padDraw(); return; }
   if(x==='zero'){
@@ -653,7 +706,7 @@ function k(x){
       if(ids.length){ const { error } = await sb.from('expense').delete().in('id', ids); if(error) throw error; }
       const { error: e2 } = await sb.from('expense').insert({ date: sheetDate, amount: 0, memo: null, voucher_id: null });
       if(e2) throw e2;
-      buf=''; negative=false; memoText='';
+      buf=''; negative=false; memoText=''; renderPadMemo();
       await loadMonth();
       drawSheetBody();
     });
@@ -662,6 +715,7 @@ function k(x){
   if(x==='memo'){
     const m = prompt('메모 입력', memoText);
     if(m!=null) memoText = m;
+    renderPadMemo();
     return;
   }
   if(x==='ok'){
@@ -672,7 +726,7 @@ function k(x){
     guard(async function(){
       const { error } = await sb.from('expense').insert({ date: sheetDate, amount: amt, memo: memo, voucher_id: vId });
       if(error) throw error;
-      buf=''; negative=false; memoText=''; selectedVoucherId=null;
+      buf=''; negative=false; memoText=''; selectedVoucherId=null; renderPadMemo();
       await loadMonth();
       drawSheetBody();
       renderPayMethods();
@@ -686,6 +740,7 @@ async function loadAssets(){
   const settings = await getSettings();
   const { data, error } = await sb.from('asset').select('*').order('sort_order');
   if(error) throw error;
+  await loadVouchers();
   const groups = [];
   const groupMap = {};
   data.forEach(function(r){
@@ -695,13 +750,18 @@ async function loadAssets(){
   const catOrder = ['현금','주식','적금','퇴직연금','주택청약'];
   const catMap = {};
   data.forEach(function(r){ catMap[r.category] = (catMap[r.category]||0) + Number(r.amount); });
+  /* 머니(상품권) 잔액도 실제 보유 자산이라 순자산·현금 분류에 포함 — 상세 항목은 아래 별도 그룹에 표시 */
+  const moneyRows = voucherCache.filter(function(v){return v.active;});
+  const moneyTotal = moneyRows.reduce(function(s,v){return s+v.remaining;},0);
+  if(moneyTotal){ catMap['현금'] = (catMap['현금']||0) + moneyTotal; }
   const categories = catOrder.filter(function(c){return catMap[c]!=null;}).map(function(c){return {name:c, total:catMap[c]};});
-  const netTotal = data.reduce(function(s,r){return s+Number(r.amount);},0);
+  const assetTotal = data.reduce(function(s,r){return s+Number(r.amount);},0);
+  const netTotal = assetTotal + moneyTotal;
   const left = settings.goal - netTotal;
   const pct = settings.goal ? netTotal/settings.goal : 0;
   const { data: snaps } = await sb.from('asset_snapshot').select('*').order('snap_date', {ascending:false}).limit(1);
   const lastDate = (snaps && snaps[0]) ? snaps[0].snap_date : '';
-  assetCache = { groups: groups, categories: categories, netTotal: netTotal, goal: settings.goal, left: left, pct: pct, lastDate: lastDate, raw: data };
+  assetCache = { groups: groups, categories: categories, netTotal: netTotal, goal: settings.goal, left: left, pct: pct, lastDate: lastDate, raw: data, moneyRows: moneyRows, moneyTotal: moneyTotal };
   document.getElementById('assetDate').textContent = lastDate;
   buildDonuts(assetCache);
   buildAssetTable(assetCache);
@@ -712,15 +772,25 @@ function buildAssetTable(data){
     h += '<div class="grouphdr">'+g.name+'</div>';
     g.rows.forEach(function(r){
       const noteId = 'note'+r.id;
+      const useText = r.use_name || '용도 추가';
       h += '<div class="row">'+
-        '<div class="main" onclick="window.editAsset('+r.id+')"><div class="t1">'+r.detail+'</div><div class="t2">'+(r.use_name||'')+'</div></div>'+
-        '<div class="v num" onclick="window.editAsset('+r.id+')">'+won(r.amount)+'</div>'+
-        (r.note ? '<span class="dot" onclick="window.tm(\''+noteId+'\')"></span>' : '')+
+        '<div class="main">'+
+          '<div class="t1" onclick="window.editAssetField('+r.id+",'detail')\">"+r.detail+'</div>'+
+          '<div class="t2"><span onclick="window.editAssetField('+r.id+",'use')\">"+useText+'</span> · <span onclick="window.editAssetField('+r.id+",'category')\">"+r.category+'</span></div>'+
+        '</div>'+
+        '<div class="v num" onclick="window.editAssetField('+r.id+",'amount')\">"+won(r.amount)+'</div>'+
+        '<span class="dot" onclick="window.tm(\''+noteId+'\')"></span>'+
         '<span class="del" onclick="window.deleteAsset('+r.id+')">×</span>'+
         '</div>'+
-        (r.note ? '<div class="memobox" id="'+noteId+'" style="display:none">'+r.note+'</div>' : '');
+        '<div class="memobox" id="'+noteId+'" style="display:none" onclick="window.editAssetField('+r.id+",'note')\">"+(r.note||'비고 추가 (탭해서 입력)')+'</div>';
     });
   });
+  if(data.moneyRows && data.moneyRows.length){
+    h += '<div class="grouphdr">머니</div>';
+    data.moneyRows.forEach(function(v){
+      h += '<div class="row" onclick="window.openVoucher()"><div class="main"><div class="t1">'+v.name+'</div><div class="t2">머니 화면에서 관리</div></div><div class="v num">'+won(v.remaining)+'</div><div class="arrow">›</div></div>';
+    });
+  }
   h += '<button class="addrow" onclick="window.addAssetItem()">+ 항목 추가</button>';
   document.getElementById('assetTable').innerHTML = h;
   document.getElementById('assetTotal').textContent = won(data.netTotal);
@@ -733,23 +803,25 @@ function buildAssetTable(data){
   document.getElementById('gPct').textContent = (data.pct*100).toFixed(2)+'%';
 }
 function tm(id){ const e=document.getElementById(id); e.style.display = e.style.display==='none' ? 'block' : 'none'; }
-function editAsset(id){
+/* 자산 항목 수정 — 예전엔 용도→상세→금액→비고→분류를 무조건 순서대로 다 물어봐서
+   "금액만 고치고 싶어도" 관계없는 항목까지 다 거쳐야 했음. 필드별로 탭한 곳만 묻도록 분리. */
+function editAssetField(id, field){
   const row = (assetCache.raw||[]).find(function(r){return r.id===id;});
   if(!row) return;
-  const use = askOptional('용도', row.use_name);
-  if(use===null) return;
-  const detail = askRequired('계좌/상세', row.detail);
-  if(detail==null) return;
-  const amount = askAmount('금액', row.amount);
-  if(amount==null) return;
-  const note = askOptional('비고', row.note);
-  if(note===null) return;
-  const category = askCategory(row.category);
-  if(category==null) return;
+  let val;
+  if(field==='use'){ val = askOptional('용도', row.use_name); if(val===null) return; }
+  else if(field==='detail'){ val = askRequired('계좌/상세', row.detail); if(val==null) return; }
+  else if(field==='amount'){ val = askAmount('금액', row.amount); if(val==null) return; }
+  else if(field==='category'){ val = askCategory(row.category); if(val==null) return; }
+  else if(field==='note'){ val = askOptional('비고', row.note); if(val===null) return; }
+  else return;
+  const dbField = field==='use' ? 'use_name' : field;
+  const payload = {};
+  payload[dbField] = (field==='note' || field==='use') ? (val||null) : val;
   guard(async function(){
-    const { error } = await sb.from('asset').update({ use_name: use, detail: detail, amount: amount, note: note||null, category: category }).eq('id', id);
+    const { error } = await sb.from('asset').update(payload).eq('id', id);
     if(error) throw error;
-    await appendSnapshot();
+    if(field==='amount' || field==='category'){ await appendSnapshot(); }
     await loadAssets();
   });
 }
@@ -790,23 +862,27 @@ async function appendSnapshot(){
     pension: cats['퇴직연금']||0, housing: cats['주택청약']||0
   });
 }
-function donut(vals, colors, center){
+function donut(vals, colors, center, labels){
   const R=52, C=2*Math.PI*R;
   let T=0; vals.forEach(function(v){T+=v;}); if(!T) T=1;
   let off=0, segs='';
   vals.forEach(function(v,i){
     const len = C*v/T;
+    const lbl = labels && labels[i] ? labels[i] : '';
     segs += '<circle cx="70" cy="70" r="'+R+'" fill="none" stroke="'+colors[i]+'" stroke-width="26" '+
-      'stroke-dasharray="'+len+' '+(C-len)+'" stroke-dashoffset="'+(-off)+'" transform="rotate(-90 70 70)"/>';
+      'stroke-dasharray="'+len+' '+(C-len)+'" stroke-dashoffset="'+(-off)+'" transform="rotate(-90 70 70)">'+
+      (lbl ? '<title>'+lbl+'</title>' : '')+'</circle>';
     off += len;
   });
   return '<svg viewBox="0 0 140 140">'+segs+'<text x="70" y="70" text-anchor="middle" dominant-baseline="central" '+
-    'font-size="15" font-weight="700" font-family="IBM Plex Mono,monospace">'+center+'</text></svg>';
+    'font-size="15" font-weight="700" font-family="Space Mono,monospace">'+center+'</text></svg>';
 }
 function buildDonuts(data){
-  const g = ['#3F3F3B','#6E6E68','#98988F','#BFBFB6','#DEDED6'];
-  document.getElementById('d1').innerHTML = donut(data.categories.map(function(c){return c.total;}), g, '');
-  document.getElementById('d2').innerHTML = donut([data.netTotal, Math.max(data.left,0)], ['#3F3F3B','#DEDED6'], (data.pct*100).toFixed(1)+'%');
+  const g = ['#12120F','#0B72E0','#5FA3EA','#F5E60A','#C7C7BC'];
+  const labels = data.categories.map(function(c){ return c.name+' '+won(c.total); });
+  document.getElementById('d1').innerHTML = donut(data.categories.map(function(c){return c.total;}), g, '', labels);
+  document.getElementById('d2').innerHTML = donut([data.netTotal, Math.max(data.left,0)], ['#12120F','#EEEEE7'],
+    (data.pct*100).toFixed(1)+'%', ['현재 '+won(data.netTotal), '남은 목표 '+won(Math.max(data.left,0))]);
 }
 function openSnapshots(){
   openScreen('s-snapshot');
@@ -1119,13 +1195,13 @@ function editSetting(key, current, isDecimal){
 
 /* ---------------- 전역 노출 (inline onclick에서 쓰려면 필요) ---------------- */
 Object.assign(window, {
-  doLogin, doLogout, shiftMonth, openSheet, closeSheet, k, toggleMemo, removeEntry,
-  go, openScreen, closeScreen, editAsset, deleteAsset, addAssetItem, tm, openSnapshots,
+  doLogin, doLogout, shiftMonth, openSheet, closeSheet, k, toggleMemo, editEntry, removeEntry, clearMemo,
+  go, openScreen, closeScreen, editAssetField, deleteAsset, addAssetItem, tm, openSnapshots,
   editPlan, renamePlanItem, deletePlanItem, copyPlanTemplate, addPlanRow,
   openFixed, toggleFx, editFx, deleteFx, addFxItem,
   openAnnual, editAnnual, deleteAnnual, addAnnualItem,
   openSettings, editSetting,
-  openVoucher, toggleVoucher, editVoucher, addVoucherItem, quickAddVoucher, selectPay,
+  openVoucher, toggleVoucher, editVoucher, addVoucherItem, quickAddVoucher, deleteVoucher, selectPay,
   toggleCalMode
 });
 
